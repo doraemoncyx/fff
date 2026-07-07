@@ -1,3 +1,5 @@
+# fff-search: core search library
+# 修改记录: 2026-06-17: 新增 encoding_rs 依赖用于 GBK 解码
 [package]
 name = "fff-search"
 version = "0.9.6"
@@ -45,6 +47,7 @@ zlob = ["dep:zlob", "fff-query-parser/zlob"]
 
 [dependencies]
 ahash = { workspace = true }
+encoding_rs = "0.8"
 rayon = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }

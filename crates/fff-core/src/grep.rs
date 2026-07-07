@@ -1,3 +1,6 @@
+//! Content grep: plain text, regex, fuzzy, and multi-pattern search.
+//! 修改记录: 2026-06-17: GBK 编码支持，新增 try_decode_gbk 及搜索路径 GBK→UTF-8 解码
+
 use crate::{
     BigramFilter, BigramOverlay,
     bigram_query::{fuzzy_to_bigram_query, regex_to_bigram_query},
@@ -20,6 +23,20 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::Level;
+
+/// Try to decode bytes as GBK when UTF-8 validation fails.
+/// Returns None if content is valid UTF-8 (fast path, no alloc).
+fn try_decode_gbk(bytes: &[u8]) -> Option<String> {
+    if std::str::from_utf8(bytes).is_ok() {
+        return None;
+    }
+    let (decoded, _, had_errors) = encoding_rs::GBK.decode(bytes);
+    if !had_errors {
+        Some(decoded.into_owned())
+    } else {
+        None
+    }
+}
 
 /// Detect if a line looks like a code definition (struct, fn, class, etc.).
 ///
@@ -1273,21 +1290,28 @@ where
                         ctx.budget,
                     )?;
 
+                    // Detect GBK encoding for non-UTF-8 files and decode
+                    // to UTF-8 before passing to the searcher. This ensures
+                    // all downstream sinks see valid UTF-8 bytes.
+                    let gbk_decoded: Option<String> = try_decode_gbk(content);
+                    let search_content: &[u8] =
+                        gbk_decoded.as_deref().map_or(content, |s| s.as_bytes());
+
                     // Fast whole-file memmem check before entering the
                     // grep-searcher machinery. Skips Vec alloc, Searcher
                     // setup, and line-splitting for files that can't match.
                     if let Some(pf) = ctx.prefilter {
                         let found = if ctx.prefilter_case_insensitive {
-                            case_insensitive_memmem::search_packed_pair(content, pf.needle())
+                            case_insensitive_memmem::search_packed_pair(search_content, pf.needle())
                         } else {
-                            pf.find(content).is_some()
+                            pf.find(search_content).is_some()
                         };
                         if !found {
                             return None;
                         }
                     }
 
-                    let file_matches = search_file(content, options.max_matches_per_file);
+                    let file_matches = search_file(search_content, options.max_matches_per_file);
 
                     if file_matches.is_empty() {
                         return None;
@@ -1776,29 +1800,38 @@ fn fuzzy_grep_search<'a>(
                     // replaces per-line from_utf8 calls (~8% of fuzzy grep time).
                     let file_is_utf8 = std::str::from_utf8(file_bytes).is_ok();
 
+                    // Try GBK decode for non-UTF-8 files (Chinese encodings).
+                    let gbk_decoded: Option<String> = if !file_is_utf8 {
+                        try_decode_gbk(file_bytes)
+                    } else {
+                        None
+                    };
+                    let line_source: &[u8] = gbk_decoded.as_deref().map_or(file_bytes, |s| s.as_bytes());
+                    let source_is_utf8 = file_is_utf8 || gbk_decoded.is_some();
+
                     // Reuse grep-searcher's LineStep for SIMD-accelerated line iteration.
-                    let mut stepper = LineStep::new(b'\n', 0, file_bytes.len());
-                    let estimated_lines = (file_bytes.len() / 40).max(64);
+                    let mut stepper = LineStep::new(b'\n', 0, line_source.len());
+                    let estimated_lines = (line_source.len() / 40).max(64);
                     let mut file_lines: Vec<&str> = Vec::with_capacity(estimated_lines);
                     let mut line_meta: Vec<(u64, u64)> = Vec::with_capacity(estimated_lines);
                     let line_term_lf = fff_grep::LineTerminator::byte(b'\n');
                     let line_term_cr = fff_grep::LineTerminator::byte(b'\r');
 
                     let mut line_number: u64 = 1;
-                    while let Some(line_match) = stepper.next_match(file_bytes) {
+                    while let Some(line_match) = stepper.next_match(line_source) {
                         let byte_offset = line_match.start() as u64;
 
                         // Strip line terminators (\n, \r).
                         let trimmed = lines::without_terminator(
-                            lines::without_terminator(&file_bytes[line_match], line_term_lf),
+                            lines::without_terminator(&line_source[line_match], line_term_lf),
                             line_term_cr,
                         );
 
                         if !trimmed.is_empty() {
-                            // SAFETY: when the whole file is valid UTF-8, every
-                            // sub-slice split on ASCII byte boundaries (\n, \r)
-                            // is also valid UTF-8.
-                            let line_str = if file_is_utf8 {
+                            // SAFETY: when the whole source is valid UTF-8
+                            // (directly or after GBK decode), every sub-slice
+                            // split on ASCII byte boundaries is also valid UTF-8.
+                            let line_str = if source_is_utf8 {
                                 unsafe { std::str::from_utf8_unchecked(trimmed) }
                             } else if let Ok(s) = std::str::from_utf8(trimmed) {
                                 s
