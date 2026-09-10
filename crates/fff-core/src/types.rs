@@ -63,6 +63,12 @@ impl FileItemFlags {
     /// File was added after the last full reindex; its indices point
     /// into the overflow builder arena, not the base arena.
     pub const OVERFLOW: u8 = 1 << 2;
+    /// Entry is a symlink pointing to a regular file. Indexed and searchable
+    /// like a normal file; opening it follows the link.
+    pub const SYMLINK: u8 = 1 << 3;
+    /// Marker entry for a symlink pointing to a directory. Only contributes a
+    /// `DirItem`; filtered out of the file table before indexing completes.
+    pub const SYMLINK_DIR: u8 = 1 << 4;
 }
 
 pub struct DirFlags;
@@ -619,6 +625,38 @@ impl FileItem {
         } else {
             self.flags
                 .fetch_and(!FileItemFlags::OVERFLOW, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    pub fn is_symlink(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & FileItemFlags::SYMLINK != 0
+    }
+
+    #[inline]
+    pub fn set_symlink(&self, val: bool) {
+        if val {
+            self.flags
+                .fetch_or(FileItemFlags::SYMLINK, Ordering::Relaxed);
+        } else {
+            self.flags
+                .fetch_and(!FileItemFlags::SYMLINK, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    pub fn is_symlink_dir(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & FileItemFlags::SYMLINK_DIR != 0
+    }
+
+    #[inline]
+    pub fn set_symlink_dir(&self, val: bool) {
+        if val {
+            self.flags
+                .fetch_or(FileItemFlags::SYMLINK_DIR, Ordering::Relaxed);
+        } else {
+            self.flags
+                .fetch_and(!FileItemFlags::SYMLINK_DIR, Ordering::Relaxed);
         }
     }
 }

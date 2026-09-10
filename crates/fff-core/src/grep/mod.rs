@@ -23,5 +23,19 @@ pub(crate) use multi_pattern::multi_grep_search;
 pub use regex::has_regex_metacharacters;
 pub use types::*;
 
+// Try to decode bytes as GBK when UTF-8 validation fails. Returns None on the
+// valid-UTF-8 fast path (no allocation) or when GBK decode reports errors.
+pub(super) fn try_decode_gbk(bytes: &[u8]) -> Option<String> {
+    if std::str::from_utf8(bytes).is_ok() {
+        return None;
+    }
+    let (decoded, _, had_errors) = encoding_rs::GBK.decode(bytes);
+    if !had_errors {
+        Some(decoded.into_owned())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod grep_tests;

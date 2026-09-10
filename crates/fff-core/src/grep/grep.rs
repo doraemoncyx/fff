@@ -629,16 +629,22 @@ where
                         ctx.budget,
                     )?;
 
+                    // GBK fallback: decode non-UTF-8 files (Chinese encodings)
+                    // to UTF-8 so every downstream sink sees valid UTF-8 bytes.
+                    let gbk_decoded: Option<String> = super::try_decode_gbk(content);
+                    let search_content: &[u8] =
+                        gbk_decoded.as_deref().map_or(content, |s| s.as_bytes());
+
                     // Fast whole-file memmem check before entering the
                     // grep-searcher machinery. Skips Vec alloc, Searcher
                     // setup, and line-splitting for files that can't match.
                     if let Some(pf) = ctx.prefilter
-                        && pf.find(content).is_none()
+                        && pf.find(search_content).is_none()
                     {
                         return None;
                     }
 
-                    let file_matches = search_file(content, options.max_matches_per_file);
+                    let file_matches = search_file(search_content, options.max_matches_per_file);
 
                     if file_matches.is_empty() {
                         return None;

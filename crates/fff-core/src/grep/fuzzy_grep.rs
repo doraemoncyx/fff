@@ -194,19 +194,30 @@ pub(super) fn fuzzy_grep_search<'a>(
                     // replaces per-line from_utf8 calls (~8% of fuzzy grep time)
                     let file_is_utf8 = std::str::from_utf8(file_bytes).is_ok();
 
-                    let mut stepper = LineStep::new(b'\n', 0, file_bytes.len());
-                    let estimated_lines = (file_bytes.len() / 40).max(64);
+                    // GBK fallback for non-UTF-8 files (Chinese encodings):
+                    // decode once, then iterate the decoded UTF-8 bytes.
+                    let gbk_decoded: Option<String> = if !file_is_utf8 {
+                        super::try_decode_gbk(file_bytes)
+                    } else {
+                        None
+                    };
+                    let line_source: &[u8] =
+                        gbk_decoded.as_deref().map_or(file_bytes, |s| s.as_bytes());
+                    let source_is_utf8 = file_is_utf8 || gbk_decoded.is_some();
+
+                    let mut stepper = LineStep::new(b'\n', 0, line_source.len());
+                    let estimated_lines = (line_source.len() / 40).max(64);
                     let mut file_lines: Vec<&str> = Vec::with_capacity(estimated_lines);
                     let mut line_meta: Vec<(u64, u64)> = Vec::with_capacity(estimated_lines);
 
                     let mut line_number: u64 = 1;
-                    while let Some(line_match) = stepper.next_match(file_bytes) {
+                    while let Some(line_match) = stepper.next_match(line_source) {
                         let byte_offset = line_match.start() as u64;
-                        let trimmed = strip_line_terminators(&file_bytes[line_match]);
+                        let trimmed = strip_line_terminators(&line_source[line_match]);
 
                         if !trimmed.is_empty() {
                             // we know for sure that the file is UTF-8 at this point
-                            let line_str = if file_is_utf8 {
+                            let line_str = if source_is_utf8 {
                                 unsafe { std::str::from_utf8_unchecked(trimmed) }
                             } else if let Ok(s) = std::str::from_utf8(trimmed) {
                                 s

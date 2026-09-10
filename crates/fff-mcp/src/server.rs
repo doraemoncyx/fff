@@ -7,6 +7,7 @@ use fff_query_parser::AiGrepConfig;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,6 +31,16 @@ fn normalize_context(raw: Option<f64>) -> Option<usize> {
         return None;
     }
     Some((v.round() as usize).min(MAX_CONTEXT_LINES))
+}
+
+// Merge a separate `constraints` string (like multi_grep's) into the grep
+// query so the parser treats them as file filters alongside inline tokens.
+fn merge_constraints<'a>(constraints: &str, query: &'a str) -> Cow<'a, str> {
+    if constraints.is_empty() {
+        Cow::Borrowed(query)
+    } else {
+        Cow::Owned(format!("{constraints} {query}"))
+    }
 }
 
 fn cleanup_fuzzy_query(s: &str) -> String {
@@ -86,14 +97,16 @@ fn make_grep_options(
 pub struct FindFilesParams {
     /// Fuzzy search query. Supports path prefixes and glob constraints.
     // `pattern` alias for consistency with grep's alias and the common
-    // file-search parameter name (#311).
-    #[serde(alias = "pattern")]
+    // file-search parameter name (#311). Also tolerant of LLMs that emit
+    // the multi-value query as a JSON array of terms.
+    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
     pub query: String,
     /// Max results (default 20).
     #[serde(rename = "maxResults")]
     // this has to be float because llms are stupid
     pub max_results: Option<f64>,
     /// Cursor from previous result. Only use if previous results weren't sufficient.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
 }
 
@@ -103,16 +116,24 @@ pub struct GrepParams {
     /// Matches within single lines only — use ONE specific term, not multiple words.
     // `pattern` alias: LLMs that have seen multi_grep (which uses `patterns`)
     // routinely call grep with `pattern`; accept it instead of erroring out
-    // with an unhelpful "missing field `query`" (#311).
-    #[serde(alias = "pattern")]
+    // with an unhelpful "missing field `query`" (#311). Also tolerant of LLMs
+    // that emit the query as a JSON array of terms.
+    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
     pub query: String,
     /// Max matching lines (default 20).
     #[serde(rename = "maxResults")]
     pub max_results: Option<f64>, // this has to be float because llms are stupid
     /// Cursor from previous result. Only use if previous results weren't sufficient.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
     /// Output format (default 'content').
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub output_mode: Option<String>,
+    /// File constraints (e.g. '*.{ts,tsx} !test/'). Merged with any inline query constraints.
+    // `default` keeps the field optional (absent -> None); `deserialize_with` then
+    // only runs when the field is present, and tolerates null / array shapes.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub constraints: Option<String>,
     /// Context lines before/after each match.
     pub context: Option<f64>,
 }
@@ -163,19 +184,88 @@ where
     deserializer.deserialize_any(PatternsVisitor)
 }
 
+// 反序列化一个可选的"单字符串"字段（如 grep 的 constraints / find_files 的 query）。
+// LLM 频繁把多值字段生成 JSON 数组（或字符串化数组），这里做形状容错统一归一为
+// 空格连接的字符串；null / 缺失返回 None。映射 multi_grep.patterns 的容错策略。
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct OptionalStringVisitor;
+
+    impl<'de> de::Visitor<'de> for OptionalStringVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string, an array of strings, a stringified JSON array, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            // Try to parse as a stringified JSON array first
+            if v.starts_with('[')
+                && let Ok(parsed) = serde_json::from_str::<Vec<String>>(v)
+            {
+                return Ok(Some(parsed.join(" ")));
+            }
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            if v.starts_with('[')
+                && let Ok(parsed) = serde_json::from_str::<Vec<String>>(&v)
+            {
+                return Ok(Some(parsed.join(" ")));
+            }
+            Ok(Some(v))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                values.push(value);
+            }
+            Ok(Some(values.join(" ")))
+        }
+    }
+
+    deserializer.deserialize_any(OptionalStringVisitor)
+}
+
+// 必填单字符串字段（grep / find_files 的 query）的反序列化器：复用上面的容错逻辑，
+// 但 null / 缺失降级为空字符串以避免破坏必填字段的语义。
+fn deserialize_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(deserialize_optional_string(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MultiGrepParams {
     /// Patterns to match (OR logic). Include all naming conventions: snake_case, PascalCase, camelCase.
     #[serde(deserialize_with = "deserialize_patterns")]
     pub patterns: Vec<String>,
     /// File constraints (e.g. '*.{ts,tsx} !test/'). ALWAYS provide when possible.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub constraints: Option<String>,
     /// Max matching lines (default 20).
     #[serde(rename = "maxResults")]
     pub max_results: Option<f64>,
     /// Cursor from previous result.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
     /// Output format (default 'content').
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub output_mode: Option<String>,
     /// Context lines before/after each match.
     pub context: Option<f64>,
@@ -295,47 +385,42 @@ impl FffServer {
         let result = picker.grep(&parsed, &options);
 
         if result.matches.is_empty() && file_offset == 0 {
-            // Auto-retry: try broadening multi-word queries by dropping first non-constraint word
+            // Auto-retry: broaden multi-word queries by dropping the first word,
+            // but only when there are no parsed constraints (the first word is
+            // then a search term, not a file filter like `*.rs` or `src/main.rs`).
             let parts: Vec<&str> = query.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let first_word = parts[0];
-                let is_valid_constraint = first_word.starts_with('!')
-                    || first_word.starts_with('*')
-                    || first_word.ends_with('/');
+            if parts.len() >= 2 && parsed.constraints.is_empty() {
+                let rest_query = parts[1..].join(" ");
+                let rest_parsed = parser.parse(&rest_query);
 
-                if !is_valid_constraint {
-                    let rest_query = parts[1..].join(" ");
-                    let rest_parsed = parser.parse(&rest_query);
+                let rest_text = rest_parsed.grep_text();
+                let retry_mode = if has_regex_metacharacters(&rest_text) {
+                    GrepMode::Regex
+                } else {
+                    mode
+                };
 
-                    let rest_text = rest_parsed.grep_text();
-                    let retry_mode = if has_regex_metacharacters(&rest_text) {
-                        GrepMode::Regex
-                    } else {
-                        mode
-                    };
+                let (retry_options, _) = make_grep_options(output_mode, retry_mode, 0, context);
+                let retry_result = picker.grep(&rest_parsed, &retry_options);
 
-                    let (retry_options, _) = make_grep_options(output_mode, retry_mode, 0, context);
-                    let retry_result = picker.grep(&rest_parsed, &retry_options);
-
-                    if !retry_result.matches.is_empty() && retry_result.matches.len() <= 10 {
-                        let mut cs = self.lock_cursors()?;
-                        let text = &GrepFormatter {
-                            matches: &retry_result.matches,
-                            files: &retry_result.files,
-                            total_matched: retry_result.matches.len(),
-                            next_file_offset: retry_result.next_file_offset,
-                            output_mode,
-                            max_results,
-                            show_context: ctx_lines > 0,
-                            auto_expand_defs: auto_expand,
-                            picker,
-                        }
-                        .format(&mut cs);
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "0 matches for '{}'. Auto-broadened to '{}':\n{}",
-                            query, rest_query, text
-                        ))]));
+                if !retry_result.matches.is_empty() && retry_result.matches.len() <= 10 {
+                    let mut cs = self.lock_cursors()?;
+                    let text = &GrepFormatter {
+                        matches: &retry_result.matches,
+                        files: &retry_result.files,
+                        total_matched: retry_result.matches.len(),
+                        next_file_offset: retry_result.next_file_offset,
+                        output_mode,
+                        max_results,
+                        show_context: ctx_lines > 0,
+                        auto_expand_defs: auto_expand,
+                        picker,
                     }
+                    .format(&mut cs);
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "0 matches for '{}'. Auto-broadened to '{}':\n{}",
+                        query, rest_query, text
+                    ))]));
                 }
             }
 
@@ -571,7 +656,8 @@ impl FffServer {
         let max_results = normalize_max_results(params.max_results, 20);
         let output_mode = OutputMode::new(params.output_mode.as_deref());
 
-        let parsed = QueryParser::new(AiGrepConfig).parse(&params.query);
+        let query = merge_constraints(params.constraints.as_deref().unwrap_or(""), &params.query);
+        let parsed = QueryParser::new(AiGrepConfig).parse(&query);
         let grep_text = parsed.grep_text();
 
         let mode = if has_regex_metacharacters(&grep_text) {
@@ -581,7 +667,7 @@ impl FffServer {
         };
 
         let mut result = self.perform_grep(
-            &params.query,
+            &query,
             mode,
             max_results,
             params.cursor.as_deref(),
@@ -751,6 +837,57 @@ mod tests {
     }
 
     #[test]
+    fn grep_params_accepts_constraints_field() {
+        let params: GrepParams =
+            serde_json::from_str(r#"{"query":"def show","constraints":"*.rs"}"#)
+                .expect("constraints field");
+        assert_eq!(params.query, "def show");
+        assert_eq!(params.constraints.as_deref(), Some("*.rs"));
+    }
+
+    #[test]
+    fn grep_params_accepts_constraints_array() {
+        // LLMs often emit the multi-value `constraints` as a JSON array; join with spaces.
+        let params: GrepParams =
+            serde_json::from_str(r#"{"query":"Foo","constraints":["*.rs","!test/"]}"#)
+                .expect("constraints array");
+        assert_eq!(params.query, "Foo");
+        assert_eq!(params.constraints.as_deref(), Some("*.rs !test/"));
+    }
+
+    #[test]
+    fn grep_params_accepts_stringified_constraints_array() {
+        let params: GrepParams =
+            serde_json::from_str(r#"{"query":"Foo","constraints":"[\"*.rs\",\"!test/\"]"}"#)
+                .expect("stringified constraints array");
+        assert_eq!(params.constraints.as_deref(), Some("*.rs !test/"));
+    }
+
+    #[test]
+    fn grep_params_accepts_null_constraints() {
+        let params: GrepParams = serde_json::from_str(r#"{"query":"Foo","constraints":null}"#)
+            .expect("null constraints");
+        assert!(params.constraints.is_none());
+    }
+
+    #[test]
+    fn grep_params_accepts_query_array() {
+        let params: GrepParams = serde_json::from_str(r#"{"query":["fn","main"]}"#)
+            .expect("query array");
+        assert_eq!(params.query, "fn main");
+    }
+
+    #[test]
+    fn merge_constraints_prepends_and_handles_empty() {
+        assert_eq!(merge_constraints("", "def show"), "def show");
+        assert_eq!(merge_constraints("*.rs", "def show"), "*.rs def show");
+        assert_eq!(
+            merge_constraints("editor2022/imgui_viewer.py", "def show"),
+            "editor2022/imgui_viewer.py def show"
+        );
+    }
+
+    #[test]
     fn find_files_params_accepts_pattern_alias() {
         let via_query: FindFilesParams =
             serde_json::from_str(r#"{"query":"foo"}"#).expect("query field");
@@ -759,5 +896,12 @@ mod tests {
         let via_pattern: FindFilesParams =
             serde_json::from_str(r#"{"pattern":"foo"}"#).expect("pattern alias");
         assert_eq!(via_pattern.query, "foo");
+    }
+
+    #[test]
+    fn find_files_params_accepts_query_array() {
+        let params: FindFilesParams = serde_json::from_str(r#"{"query":["src","main"]}"#)
+            .expect("query array");
+        assert_eq!(params.query, "src main");
     }
 }
