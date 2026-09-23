@@ -2102,7 +2102,18 @@ impl FileSync {
         )?;
         let ignore_rules = ignore_rules.map(Arc::new);
 
-        // group walked dirs and files with a dir part to the same order
+        // Symlinked dirs are searchable unconditionally, even when the walker
+        // didn't descend into them (follow_symlinks=false, or the zlob backend
+        // on Windows where following is unimplemented). Expand their targets so
+        // files inside appear in the index. Already-descended symlink dirs are
+        // detected by existing pairs under the symlink prefix and skipped.
+        let expanded =
+            expand_symlink_dir_pairs(base_path, &mut pairs, is_git_repo, ignore_rules.as_deref());
+        synced_files_count.fetch_add(expanded, Ordering::Relaxed);
+
+        // Sort by (dir_part, filename). This groups files by their directory
+        // into contiguous runs so the linear dir-extraction pass below can
+        // dedupe by comparing only against the previous dir.
         BACKGROUND_THREAD_POOL.install(|| {
             rayon::join(
                 || {
@@ -2122,7 +2133,13 @@ impl FileSync {
         let dirs = populates_dirs_files_chunked_storage(&mut pairs, &walked_dirs, &mut builder);
         drop(walked_dirs);
 
-        let mut files: Vec<FileItem> = pairs.into_iter().map(|(file, _)| file).collect();
+        let mut files: Vec<FileItem> = pairs
+            .into_iter()
+            .map(|(file, _)| file)
+            // Symlink-to-dir markers only contributed a DirItem; keep them out
+            // of the file table so they don't appear as searchable files.
+            .filter(|f| !f.is_symlink_dir())
+            .collect();
         let chunked_paths = builder.finish();
         let arena = chunked_paths.as_arena_ptr();
 
@@ -2209,6 +2226,160 @@ impl FileSync {
             chunked_paths: Some(Arc::new(chunked_paths)),
             ignore_rules,
         })
+    }
+}
+
+/// Make files inside symlinked directories searchable regardless of the walker
+/// backend / `follow_symlinks` setting.
+///
+/// The walkers emit `SYMLINK_DIR` markers for symlink→dir entries but (by
+/// default) do not descend into them — and the zlob Windows backend can't
+/// follow symlinks at all. This pass walks each symlink's target recursively
+/// and adds the files under the symlink's relative prefix, so `link/main.py`
+/// becomes searchable exactly like `real/main.py`.
+///
+/// Returns the number of files added.
+fn expand_symlink_dir_pairs(
+    base_path: &Path,
+    pairs: &mut Vec<(FileItem, String)>,
+    is_git_repo: bool,
+    ignore_rules: Option<&crate::walk::WalkIgnoreRules>,
+) -> usize {
+    // Markers carry a trailing '/', e.g. "python3/". Collect them first
+    // (borrowing pairs while mutating it below is not allowed).
+    let markers: Vec<String> = pairs
+        .iter()
+        .filter(|(item, _)| item.is_symlink_dir())
+        .map(|(_, rel)| rel.trim_end_matches('/').to_string())
+        .collect();
+
+    // Cycle guard: canonical real dirs already expanded (shared across all
+    // symlink roots so `a -> b -> a` loops terminate).
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut added = 0usize;
+
+    for prefix in markers {
+        // If the walker already descended (follow_symlinks=true on a backend
+        // that supports it), files under "prefix/" exist — skip.
+        let already_descended = pairs
+            .iter()
+            .any(|(item, rel)| !item.is_symlink_dir() && rel.starts_with(&format!("{prefix}/")));
+        if already_descended {
+            continue;
+        }
+
+        // Canonicalize follows the symlink → real target dir.
+        let Ok(target) = std::fs::canonicalize(base_path.join(&prefix)) else {
+            continue;
+        };
+        if !visited.insert(target.clone()) {
+            continue;
+        }
+
+        let before = pairs.len();
+        expand_symlink_dir_into(
+            &target,
+            &prefix,
+            is_git_repo,
+            ignore_rules,
+            &mut visited,
+            pairs,
+        );
+        added += pairs.len() - before;
+    }
+
+    added
+}
+
+/// Recursively walk `dir` (a real directory, already canonicalized at the root)
+/// emitting `(FileItem, "prefix/sub/…/name")` pairs for every file found.
+#[allow(clippy::too_many_arguments)]
+fn expand_symlink_dir_into(
+    dir: &Path,
+    rel_prefix: &str,
+    is_git_repo: bool,
+    ignore_rules: Option<&crate::walk::WalkIgnoreRules>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    pairs: &mut Vec<(FileItem, String)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+
+        // Mirror the walker's pruning: skip .git dirs and, on non-git roots,
+        // hidden entries + known non-code dirs.
+        if name == ".git" {
+            continue;
+        }
+        if !is_git_repo && name.starts_with('.') {
+            continue;
+        }
+
+        let rel = format!("{rel_prefix}/{name}");
+
+        // Respect gitignore / ignore rules collected during the main walk.
+        // `is_ignored` lstats `base_path/<rel>` which resolves through the
+        // symlink, so entries that exist on disk are classified correctly.
+        if let Some(rules) = ignore_rules {
+            if rules.is_ignored(Path::new(&rel)) {
+                continue;
+            }
+        } else if !is_git_repo && rel_is_non_code_dir(&rel) {
+            continue;
+        }
+
+        // Follow symlinks inside the target; classify by resolved type.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+
+        if meta.is_dir() {
+            let Ok(canon) = std::fs::canonicalize(&path) else {
+                continue;
+            };
+            if !visited.insert(canon) {
+                continue;
+            }
+            expand_symlink_dir_into(&path, &rel, is_git_repo, ignore_rules, visited, pairs);
+        } else if meta.is_file() {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            let is_binary = is_known_binary_extension(&path);
+            let filename_offset = rel.rfind('/').map(|i| i + 1).unwrap_or(0) as u16;
+            let item = FileItem::new_raw(filename_offset, meta.len(), modified, None, is_binary);
+            pairs.push((item, rel));
+        }
+    }
+}
+
+/// Root-relative non-code-dir check for symlink expansion. Mirrors the walker's
+/// `IGNORED_DIRS` pruning but on the '/' separated relative path (the absolute
+/// `is_non_code_directory` substring match is unsuitable — the base path may
+/// itself live under `AppData/Local` etc.). Patterns are `**/`-anchored, so a
+/// match fires when any ancestor dir equals the pattern or ends with it.
+fn rel_is_non_code_dir(rel: &str) -> bool {
+    // Parent dir of the file; walk it up to the root, comparing each ancestor.
+    let mut rest = rel.rsplit_once('/').map_or(rel, |(dir, _)| dir);
+    loop {
+        if crate::ignore::IGNORED_DIRS.iter().any(|dir| {
+            let dir = dir.trim_end_matches('/');
+            rest == dir || rest.ends_with(&format!("/{dir}"))
+        }) {
+            return true;
+        }
+        match rest.rsplit_once('/') {
+            Some((parent, _)) => rest = parent,
+            None => return false,
+        }
     }
 }
 
@@ -2691,5 +2862,228 @@ mod tests {
         let outside = base.parent().unwrap().join("outside");
         assert_eq!(picker.remove_all_files_in_dir(&outside), 0);
         assert!(picker.get_file_by_path(&kept).is_some());
+    }
+
+    // End-to-end: symlinks must be searchable through the picker, both as
+    // files (link→file) and as directories (link→dir), even with
+    // follow_symlinks=false.
+    #[test]
+    fn symlinks_are_searchable() {
+        use fff_query_parser::{FFFQuery, FileSearchConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = crate::path_utils::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(base.join("real_dir")).unwrap();
+        std::fs::write(base.join("real_dir/real_file.txt"), "content").unwrap();
+        std::fs::write(base.join("real_root.txt"), "content").unwrap();
+
+        let file_link_created =
+            symlink(&base.join("real_root.txt"), &base.join("my_link.txt")).is_ok();
+        let dir_link_created =
+            symlink_dir(&base.join("real_dir"), &base.join("my_link_dir")).is_ok();
+        if !file_link_created && !dir_link_created {
+            eprintln!("skipping: symlink creation unsupported");
+            return;
+        }
+
+        let mut picker = FilePicker::new(FilePickerOptions {
+            base_path: base.to_str().unwrap().into(),
+            watch: false,
+            follow_symlinks: false,
+            ..Default::default()
+        })
+        .unwrap();
+        picker.collect_files().unwrap();
+
+        if file_link_created {
+            let query = FFFQuery::parse("my_link", FileSearchConfig);
+            let result = picker.fuzzy_search(
+                &query,
+                None,
+                FuzzySearchOptions {
+                    pagination: PaginationArgs {
+                        offset: 0,
+                        limit: 100,
+                    },
+                    ..Default::default()
+                },
+            );
+            let hit = result
+                .items
+                .iter()
+                .find(|f| f.relative_path(&picker) == "my_link.txt")
+                .copied();
+            assert!(
+                hit.is_some(),
+                "symlink→file should be searchable, got: {:?}",
+                result
+                    .items
+                    .iter()
+                    .map(|f| f.relative_path(&picker))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        if dir_link_created {
+            let query = FFFQuery::parse("my_link_dir", FileSearchConfig);
+            let result = picker.fuzzy_search_directories(
+                &query,
+                FuzzySearchOptions {
+                    pagination: PaginationArgs {
+                        offset: 0,
+                        limit: 100,
+                    },
+                    ..Default::default()
+                },
+            );
+            let hit = result
+                .items
+                .iter()
+                .find(|d| d.relative_path(&picker) == "my_link_dir/")
+                .copied();
+            assert!(hit.is_some(), "symlink→dir should be searchable as a dir");
+        }
+    }
+
+    // User regression: a symlink→dir at the base root with a file inside must
+    // be fully searchable — both the file path (fuzzy) and its CONTENT (grep).
+    // Follows the g:\tmp2_sprsize_code\python3 → …\python3 case.
+    #[test]
+    fn files_inside_symlink_dir_are_greppable() {
+        use fff_query_parser::{FFFQuery, FileSearchConfig, GrepConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = crate::path_utils::canonicalize(dir.path()).unwrap();
+        // Symlink target lives OUTSIDE the base (like the real repo case).
+        let target_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(target_root.path().join("python3")).unwrap();
+        std::fs::write(
+            target_root.path().join("python3/main.py"),
+            "def _parse_args(str_input):\n    pass\n",
+        )
+        .unwrap();
+
+        let dir_link_created =
+            symlink_dir(&target_root.path().join("python3"), &base.join("python3")).is_ok();
+        if !dir_link_created {
+            eprintln!("skipping: symlink creation unsupported");
+            return;
+        }
+
+        let mut picker = FilePicker::new(FilePickerOptions {
+            base_path: base.to_str().unwrap().into(),
+            watch: false,
+            follow_symlinks: false,
+            ..Default::default()
+        })
+        .unwrap();
+        picker.collect_files().unwrap();
+
+        // 1. Fuzzy path search finds the file under the symlink path.
+        let query = FFFQuery::parse("main.py", FileSearchConfig::default());
+        let result = picker.fuzzy_search(
+            &query,
+            None,
+            FuzzySearchOptions {
+                pagination: PaginationArgs {
+                    offset: 0,
+                    limit: 100,
+                },
+                ..Default::default()
+            },
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|f| f.relative_path(&picker) == "python3/main.py"),
+            "file inside symlink dir should be searchable by name, got: {:?}",
+            result
+                .items
+                .iter()
+                .map(|f| f.relative_path(&picker))
+                .collect::<Vec<_>>()
+        );
+
+        // 2. Content (grep) search finds text inside that file.
+        let grep_query = FFFQuery::parse("_parse_args", GrepConfig::default());
+        let grep_result = picker.grep(
+            &grep_query,
+            &GrepSearchOptions {
+                max_file_size: 10 * 1024 * 1024,
+                max_matches_per_file: 200,
+                smart_case: true,
+                file_offset: 0,
+                page_limit: 50,
+                mode: crate::GrepMode::PlainText,
+                time_budget_ms: 0,
+                enforce_time_budget: false,
+                before_context: 0,
+                after_context: 0,
+                classify_definitions: false,
+                trim_whitespace: false,
+                abort_signal: None,
+            },
+        );
+        assert!(
+            grep_result
+                .files
+                .iter()
+                .any(|f| f.relative_path(&picker) == "python3/main.py"),
+            "grep should find content inside symlink dir, got: {:?}",
+            grep_result
+                .files
+                .iter()
+                .map(|f| f.relative_path(&picker))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+    #[cfg(unix)]
+    fn symlink_dir(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        match std::os::windows::fs::symlink_dir(target, link) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let status = std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(link)
+                    .arg(target)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => Ok(()),
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "symlink_dir + mklink /J both failed",
+                    )),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rel_is_non_code_dir_cases() {
+        assert!(rel_is_non_code_dir("python3/node_modules/x.js"));
+        assert!(rel_is_non_code_dir("a/b/node_modules/c/d.txt"));
+        assert!(rel_is_non_code_dir("messiah/target/debug/out.rs"));
+        assert!(rel_is_non_code_dir("messiah/target/release/x"));
+        assert!(!rel_is_non_code_dir("python3/main.py"));
+        assert!(!rel_is_non_code_dir(
+            "messiah/Engine/Sources/External/main.py"
+        ));
+        assert!(!rel_is_non_code_dir("src/lib/foo.rs"));
     }
 }
