@@ -7,7 +7,6 @@ use fff_query_parser::AiGrepConfig;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
-use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,16 +30,6 @@ fn normalize_context(raw: Option<f64>) -> Option<usize> {
         return None;
     }
     Some((v.round() as usize).min(MAX_CONTEXT_LINES))
-}
-
-// Merge a separate `constraints` string (like multi_grep's) into the grep
-// query so the parser treats them as file filters alongside inline tokens.
-fn merge_constraints<'a>(constraints: &str, query: &'a str) -> Cow<'a, str> {
-    if constraints.is_empty() {
-        Cow::Borrowed(query)
-    } else {
-        Cow::Owned(format!("{constraints} {query}"))
-    }
 }
 
 fn cleanup_fuzzy_query(s: &str) -> String {
@@ -130,11 +119,6 @@ pub struct GrepParams {
     /// Output format (default 'content').
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub output_mode: Option<String>,
-    /// File constraints (e.g. '*.{ts,tsx} !test/'). Merged with any inline query constraints.
-    // `default` keeps the field optional (absent -> None); `deserialize_with` then
-    // only runs when the field is present, and tolerates null / array shapes.
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub constraints: Option<String>,
     /// Number of context lines to show before/after each match (integer). NOT free-form notes or commands.
     #[serde(default, deserialize_with = "deserialize_optional_number")]
     pub context: Option<f64>,
@@ -186,7 +170,7 @@ where
     deserializer.deserialize_any(PatternsVisitor)
 }
 
-// 反序列化一个可选的"单字符串"字段（如 grep 的 constraints / find_files 的 query）。
+// 反序列化一个可选的"单字符串"字段（如 grep 的 cursor / output_mode、find_files 的 query）。
 // LLM 频繁把多值字段生成 JSON 数组（或字符串化数组），这里做形状容错统一归一为
 // 空格连接的字符串；null / 缺失返回 None。映射 multi_grep.patterns 的容错策略。
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -721,8 +705,8 @@ impl FffServer {
         let max_results = normalize_max_results(params.max_results, 20);
         let output_mode = OutputMode::new(params.output_mode.as_deref());
 
-        let query = merge_constraints(params.constraints.as_deref().unwrap_or(""), &params.query);
-        let parsed = QueryParser::new(AiGrepConfig).parse(&query);
+        let query = &params.query;
+        let parsed = QueryParser::new(AiGrepConfig).parse(query);
         let grep_text = parsed.grep_text();
 
         let mode = if has_regex_metacharacters(&grep_text) {
@@ -732,7 +716,7 @@ impl FffServer {
         };
 
         let mut result = self.perform_grep(
-            &query,
+            query,
             mode,
             max_results,
             params.cursor.as_deref(),
@@ -918,54 +902,10 @@ mod tests {
     }
 
     #[test]
-    fn grep_params_accepts_constraints_field() {
-        let params: GrepParams =
-            serde_json::from_str(r#"{"query":"def show","constraints":"*.rs"}"#)
-                .expect("constraints field");
-        assert_eq!(params.query, "def show");
-        assert_eq!(params.constraints.as_deref(), Some("*.rs"));
-    }
-
-    #[test]
-    fn grep_params_accepts_constraints_array() {
-        // LLMs often emit the multi-value `constraints` as a JSON array; join with spaces.
-        let params: GrepParams =
-            serde_json::from_str(r#"{"query":"Foo","constraints":["*.rs","!test/"]}"#)
-                .expect("constraints array");
-        assert_eq!(params.query, "Foo");
-        assert_eq!(params.constraints.as_deref(), Some("*.rs !test/"));
-    }
-
-    #[test]
-    fn grep_params_accepts_stringified_constraints_array() {
-        let params: GrepParams =
-            serde_json::from_str(r#"{"query":"Foo","constraints":"[\"*.rs\",\"!test/\"]"}"#)
-                .expect("stringified constraints array");
-        assert_eq!(params.constraints.as_deref(), Some("*.rs !test/"));
-    }
-
-    #[test]
-    fn grep_params_accepts_null_constraints() {
-        let params: GrepParams = serde_json::from_str(r#"{"query":"Foo","constraints":null}"#)
-            .expect("null constraints");
-        assert!(params.constraints.is_none());
-    }
-
-    #[test]
     fn grep_params_accepts_query_array() {
         let params: GrepParams =
             serde_json::from_str(r#"{"query":["fn","main"]}"#).expect("query array");
         assert_eq!(params.query, "fn main");
-    }
-
-    #[test]
-    fn merge_constraints_prepends_and_handles_empty() {
-        assert_eq!(merge_constraints("", "def show"), "def show");
-        assert_eq!(merge_constraints("*.rs", "def show"), "*.rs def show");
-        assert_eq!(
-            merge_constraints("editor2022/imgui_viewer.py", "def show"),
-            "editor2022/imgui_viewer.py def show"
-        );
     }
 
     #[test]

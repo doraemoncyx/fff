@@ -82,7 +82,7 @@ pub const MCP_INSTRUCTIONS: &str = concat!(
     "\n",
     "## Constraint Syntax\n",
     "\n",
-    "For grep: constraints go INLINE (prepended) or in the optional 'constraints' parameter.\n",
+    "For grep: constraints go INLINE (prepended).\n",
     "For multi_grep: constraints go in the separate 'constraints' parameter.\n",
     "\n",
     "Constraints MUST match one of these formats:\n",
