@@ -7,6 +7,109 @@ use std::io::Write;
 use std::sync::atomic::AtomicBool;
 
 #[test]
+fn invalid_regex_error_survives_empty_literal_prefilter() {
+    let root = tempfile::tempdir().unwrap();
+    for index in 0..128 {
+        std::fs::write(
+            root.path().join(format!("file_{index}.txt")),
+            "ordinary text",
+        )
+        .unwrap();
+    }
+    std::fs::write(root.path().join("file_0.txt"), "Qq marker").unwrap();
+    std::fs::write(root.path().join("file_1.txt"), "Zz marker").unwrap();
+    let mut picker = FilePicker::new(FilePickerOptions {
+        base_path: root.path().to_string_lossy().into_owned(),
+        watch: false,
+        ..Default::default()
+    })
+    .unwrap();
+    picker.collect_files().unwrap();
+    let query = parse_grep_query("QqZz(");
+    let options = GrepSearchOptions {
+        mode: GrepMode::Regex,
+        ..Default::default()
+    };
+    let before = picker.grep(&query, &options);
+    assert!(before.matches.is_empty());
+    assert!(before.regex_fallback_error.is_some());
+
+    let builder = BigramIndexBuilder::new(picker.get_files().len());
+    let skip = BigramIndexBuilder::new(picker.get_files().len());
+    for (index, file) in picker.get_files().iter().enumerate() {
+        let content = std::fs::read(root.path().join(file.relative_path(&picker))).unwrap();
+        builder.add_file_content(&skip, index, &content);
+    }
+    picker.set_bigram_index(builder.compress(None));
+    let after = picker.grep(&query, &options);
+    assert!(after.matches.is_empty());
+    assert_eq!(after.total_files_searched, 0);
+    assert!(after.regex_fallback_error.is_some());
+}
+
+#[test]
+fn sparse_matches_after_empty_batches_preserve_pagination() {
+    let root = tempfile::tempdir().unwrap();
+    for index in 0..1536 {
+        let extension = if index < 512 { "rs" } else { "png" };
+        let path = root.path().join(format!("file_{index}.{extension}"));
+        let content = if [32, 100, 180, 240].contains(&index) {
+            "needle\n"
+        } else {
+            "ordinary content\n"
+        };
+        std::fs::write(&path, content).unwrap();
+        // `File::open` is read-only and Windows requires write access to set file times.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + index),
+            ))
+            .unwrap();
+    }
+    let mut picker = FilePicker::new(FilePickerOptions {
+        base_path: root.path().to_string_lossy().into_owned(),
+        watch: false,
+        ..Default::default()
+    })
+    .unwrap();
+    picker.collect_files().unwrap();
+
+    for mode in [GrepMode::PlainText, GrepMode::Regex] {
+        let query = parse_grep_query("needle *.rs");
+        let mut options = GrepSearchOptions {
+            mode,
+            page_limit: usize::MAX,
+            ..Default::default()
+        };
+        let result = picker.grep(&query, &options);
+        let expected: Vec<_> = result
+            .files
+            .iter()
+            .map(|file| file.relative_path(&picker))
+            .collect();
+        assert_eq!(expected.len(), 4);
+        assert_eq!(result.filtered_file_count, 512);
+
+        options.page_limit = 1;
+        let mut actual = Vec::new();
+        loop {
+            let page = picker.grep(&query, &options);
+            actual.extend(page.files.iter().map(|file| file.relative_path(&picker)));
+            assert_eq!(page.total_files, 1536);
+            if page.next_file_offset == 0 {
+                break;
+            }
+            assert!(page.next_file_offset > options.file_offset);
+            options.file_offset = page.next_file_offset;
+        }
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn test_replace_newline_escapes() {
     // Single \n → multiline: replaced with a real newline at byte 3
     assert_eq!(
@@ -521,4 +624,79 @@ fn regex_fallback_keeps_file_path_scope_issue_756() {
         vec!["scope/target.css"],
         "regex fallback must not leak outside the FilePath scope"
     );
+}
+
+#[test]
+fn multi_grep_keeps_files_for_a_pattern_without_bigrams() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = crate::path_utils::canonicalize(dir.path()).unwrap();
+
+    // Only a/b/c carry the ASCII needle, so its bigrams stay below the
+    // ubiquity threshold that `compress` drops.
+    let base_contents: &[(&str, &str)] = &[
+        ("a.txt", "hello unicorn world"),
+        ("b.txt", "another unicorn line"),
+        ("c.txt", "one more unicorn here"),
+        ("d.txt", "nothing special in here"),
+        ("e.txt", "日本語のテキスト"),
+        ("f.txt", "rainbow sky above"),
+    ];
+    for (name, content) in base_contents {
+        let mut f = std::fs::File::create(base.join(name)).unwrap();
+        writeln!(f, "{}", content).unwrap();
+    }
+
+    let mut picker = FilePicker::new(FilePickerOptions {
+        base_path: base.to_str().unwrap().into(),
+        watch: false,
+        ..Default::default()
+    })
+    .unwrap();
+    picker.collect_files().unwrap();
+    assert_eq!(picker.get_files().len(), base_contents.len());
+
+    let consec_builder = BigramIndexBuilder::new(base_contents.len());
+    let skip_builder = BigramIndexBuilder::new(base_contents.len());
+    for (i, (_, content)) in base_contents.iter().enumerate() {
+        consec_builder.add_file_content(&skip_builder, i, content.as_bytes());
+    }
+    // Compressed as build_bigram_index does, so this is the production prefilter.
+    let mut index = consec_builder.compress(None);
+    index.set_skip_index(skip_builder.compress(Some(
+        crate::index::bigram_filter::SKIP_INDEX_MIN_DENSITY_PCT,
+    )));
+    picker.set_bigram_index(index);
+
+    let options = crate::GrepSearchOptions {
+        mode: super::GrepMode::PlainText,
+        smart_case: true,
+        page_limit: 100,
+        ..Default::default()
+    };
+
+    let grep = |patterns: &[&str]| -> (Vec<String>, usize) {
+        let result = picker.multi_grep(patterns, &[], &options);
+        let mut paths: Vec<String> = result
+            .files
+            .iter()
+            .map(|f| f.relative_path(&picker))
+            .collect();
+        paths.sort();
+        (paths, result.total_files_searched)
+    };
+
+    // The CJK needle has no printable-ASCII bigram, so nothing can be
+    // prefiltered: every file is searched and e.txt is found.
+    let (paths, searched) = grep(&["unicorn", "日本語"]);
+    assert_eq!(paths, vec!["a.txt", "b.txt", "c.txt", "e.txt"]);
+    assert_eq!(searched, base_contents.len());
+
+    // Every pattern indexable: only the files carrying some pattern's
+    // bigrams are searched, so the prefilter still narrows.
+    let (paths, searched) = grep(&["unicorn", "rainbow"]);
+    assert_eq!(paths, vec!["a.txt", "b.txt", "c.txt", "f.txt"]);
+    assert_eq!(searched, 4);
+    let (paths, searched) = grep(&["unicorn"]);
+    assert_eq!(paths, vec!["a.txt", "b.txt", "c.txt"]);
+    assert_eq!(searched, 3);
 }
