@@ -1,23 +1,19 @@
-$ErrorActionPreference = "Stop"
-
-$llvmPaths = @(
-    "C:\Program Files\LLVM\bin",
-    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin",
-    "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\Llvm\x64\bin",
-    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin"
+param(
+    # Build the zlob backend instead of the default pure-Rust ripgrep walker.
+    # Needs zig 0.16.0 on PATH and libclang.dll for bindgen.
+    [switch]$Zlob
 )
 
-$clangFound = $false
-foreach ($p in $llvmPaths) {
-    if (Test-Path "$p\libclang.dll") {
-        $env:LIBCLANG_PATH = $p
-        $clangFound = $true
-        break
+$ErrorActionPreference = "Stop"
+
+if ($Zlob) {
+    # scoop's llvm manifest exports LIBCLANG_PATH at user scope; this only covers
+    # shells that started before that variable existed.
+    if (-not $env:LIBCLANG_PATH) {
+        $env:LIBCLANG_PATH = 'D:\program\scoop\apps\llvm\current\bin'
     }
+    cargo build --release -p fff-mcp --no-default-features --features zlob @args
 }
-
-if (-not $clangFound) {
-    Write-Warning "libclang.dll not found. zlob build may fail. Set LIBCLANG_PATH manually."
+else {
+    cargo build --release -p fff-mcp @args
 }
-
-cargo build --release -p fff-mcp --features zlob @args
