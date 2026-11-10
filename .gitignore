@@ -21,6 +21,9 @@ packages/fff-bun/glob-bench-bin
 dist/
 scripts/benchmark-results/
 
+# Local toolchains (build.py auto-detects tools/zig-*/zig.exe)
+tools/zig*/
+
 # Native binaries (downloaded at install)
 *.dylib
 *.so
