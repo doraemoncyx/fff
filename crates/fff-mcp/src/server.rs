@@ -96,8 +96,9 @@ fn make_grep_options(
 pub struct FindFilesParams {
     /// Fuzzy filename or path query. Put known module constraints in path.
     // `pattern` alias for consistency with grep's alias and the common
-    // file-search parameter name (#311).
-    #[serde(alias = "pattern")]
+    // file-search parameter name (#311). Also tolerant of LLMs that emit
+    // the multi-value query as a JSON array of terms.
+    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
     pub query: String,
     /// Directory, filename, or one glob to search. Set this from the request's module context.
     /// Examples: "src/net", "client.py", "**/*billing*client*/**".
@@ -114,6 +115,7 @@ pub struct FindFilesParams {
     // this has to be float because llms are stupid
     pub max_results: Option<f64>,
     /// Cursor from previous result. Only use if previous results weren't sufficient.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
 }
 
@@ -122,8 +124,9 @@ pub struct GrepParams {
     /// Content pattern. Use mode="regex" for alternatives such as deadline|timeout.
     // `pattern` alias: LLMs that have seen multi_grep (which uses `patterns`)
     // routinely call grep with `pattern`; accept it instead of erroring out
-    // with an unhelpful "missing field `query`" (#311).
-    #[serde(alias = "pattern")]
+    // with an unhelpful "missing field `query`" (#311). Also tolerant of LLMs
+    // that emit the query as a JSON array of terms.
+    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
     pub query: String,
     /// Complete directory name, filename, or glob. Use **/*transport*/** for a partial module name.
     pub path: Option<String>,
@@ -137,10 +140,13 @@ pub struct GrepParams {
     #[serde(rename = "maxResults")]
     pub max_results: Option<f64>, // this has to be float because llms are stupid
     /// Cursor from previous result. Only use if previous results weren't sufficient.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
     /// Output format (default 'content').
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub output_mode: Option<String>,
     /// Lines before and after each match. Omit for bounded automatic context, or use 0 for matching lines only.
+    #[serde(default, deserialize_with = "deserialize_optional_number")]
     pub context: Option<f64>,
     /// Context lines before each match; overrides context (rg -B).
     pub before_context: Option<f64>,
@@ -215,21 +221,151 @@ where
     deserializer.deserialize_any(PatternsVisitor)
 }
 
+// LLMs routinely emit scalar fields as arrays, stringified arrays, or notes;
+// coalesce every shape into one string instead of failing the whole call.
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct OptionalStringVisitor;
+
+    impl<'de> de::Visitor<'de> for OptionalStringVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string, an array of strings, a stringified JSON array, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v.starts_with('[')
+                && let Ok(parsed) = serde_json::from_str::<Vec<String>>(v)
+            {
+                return Ok(Some(parsed.join(" ")));
+            }
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            if v.starts_with('[')
+                && let Ok(parsed) = serde_json::from_str::<Vec<String>>(&v)
+            {
+                return Ok(Some(parsed.join(" ")));
+            }
+            Ok(Some(v))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                values.push(value);
+            }
+            Ok(Some(values.join(" ")))
+        }
+    }
+
+    deserializer.deserialize_any(OptionalStringVisitor)
+}
+
+// Required counterpart: null/missing degrades to an empty query rather than erroring.
+fn deserialize_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(deserialize_optional_string(deserializer)?.unwrap_or_default())
+}
+
+// Numbers arrive as ints, floats, numeric strings, or objects holding notes; only
+// real numbers survive, everything else degrades to None.
+fn deserialize_optional_number<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct OptionalNumberVisitor;
+
+    impl<'de> de::Visitor<'de> for OptionalNumberVisitor {
+        type Value = Option<f64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a number, a numeric string, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v as f64))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v as f64))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(v.trim().parse().ok())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(v.trim().parse().ok())
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map
+                .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(OptionalNumberVisitor)
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MultiGrepParams {
     /// Patterns to match (OR logic). Include all naming conventions: snake_case, PascalCase, camelCase.
     #[serde(deserialize_with = "deserialize_patterns")]
     pub patterns: Vec<String>,
     /// Known directory, module glob, filename, or extension, e.g. "src/net/" or "**/billing/**".
+    // LLMs often emit this multi-value field as a JSON array; join with spaces.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub constraints: Option<String>,
     /// Max matching lines (default 20).
     #[serde(rename = "maxResults")]
     pub max_results: Option<f64>,
     /// Cursor from previous result.
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
     /// Output format (default 'content').
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub output_mode: Option<String>,
     /// Context lines before/after each match.
+    #[serde(default, deserialize_with = "deserialize_optional_number")]
     pub context: Option<f64>,
     /// Return matching declarations. If none are found, report that and return other matches.
     #[serde(default)]
@@ -1562,6 +1698,46 @@ mod tests {
         let via_pattern: FindFilesParams =
             serde_json::from_str(r#"{"pattern":"foo"}"#).expect("pattern alias");
         assert_eq!(via_pattern.query, "foo");
+    }
+
+    #[test]
+    fn query_accepts_json_array() {
+        let grep: GrepParams =
+            serde_json::from_str(r#"{"query":["fn","main"]}"#).expect("grep query array");
+        assert_eq!(grep.query, "fn main");
+
+        let files: FindFilesParams =
+            serde_json::from_str(r#"{"query":["src","main"]}"#).expect("find_files query array");
+        assert_eq!(files.query, "src main");
+    }
+
+    #[test]
+    fn context_accepts_numeric_string() {
+        let params: GrepParams =
+            serde_json::from_str(r#"{"query":"foo","context":"3"}"#).expect("numeric string");
+        assert_eq!(params.context, Some(3.0));
+    }
+
+    #[test]
+    fn context_ignores_freeform_object() {
+        // LLMs stuff notes/commands into `context`; degrade to None instead of failing.
+        let params: MultiGrepParams =
+            serde_json::from_str(r#"{"patterns":["foo"],"context":{"command":"ls"}}"#)
+                .expect("object context ignored");
+        assert_eq!(params.context, None);
+    }
+
+    #[test]
+    fn multi_grep_constraints_accept_array_and_null() {
+        let array: MultiGrepParams =
+            serde_json::from_str(r#"{"patterns":["Foo"],"constraints":["*.rs","!test/"]}"#)
+                .expect("constraints array");
+        assert_eq!(array.constraints.as_deref(), Some("*.rs !test/"));
+
+        let null: MultiGrepParams =
+            serde_json::from_str(r#"{"patterns":["Foo"],"constraints":null}"#)
+                .expect("null constraints");
+        assert!(null.constraints.is_none());
     }
 
     #[test]

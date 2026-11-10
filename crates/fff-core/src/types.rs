@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "windows"))]
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(not(target_os = "windows"))]
 use crate::constants::{FRESH_MMAP_THRESHOLD, MMAP_THRESHOLD};
@@ -56,20 +56,30 @@ impl FileSliceExt for [FileItem] {
 pub struct FileItemFlags;
 
 impl FileItemFlags {
-    pub const BINARY: u8 = 1 << 0;
+    pub const BINARY: u16 = 1 << 0;
     /// Tombstone: file was deleted but index slot is preserved so
     /// bigram indices for other files stay valid.
-    pub const DELETED: u8 = 1 << 1;
+    pub const DELETED: u16 = 1 << 1;
     /// File was added after the last full reindex; its indices point
     /// into the overflow builder arena, not the base arena.
-    pub const OVERFLOW: u8 = 1 << 2;
+    pub const OVERFLOW: u16 = 1 << 2;
     // Cached language ID in bits 3..7; zero means unsupported.
-    const DEFINITION_LANGUAGE_MASK: u8 = 0b1111_1000;
+    const DEFINITION_LANGUAGE_MASK: u16 = 0b1111_1000;
+    /// Entry is a symlink pointing to a regular file. Indexed and searchable
+    /// like a normal file; opening it follows the link.
+    pub const SYMLINK: u16 = 1 << 8;
+    /// Marker entry for a symlink pointing to a directory. Only contributes a
+    /// `DirItem`; filtered out of the file table before indexing completes.
+    pub const SYMLINK_DIR: u16 = 1 << 9;
 }
 
 const _: () = assert!(
     FileItemFlags::DEFINITION_LANGUAGE_MASK
-        & (FileItemFlags::BINARY | FileItemFlags::DELETED | FileItemFlags::OVERFLOW)
+        & (FileItemFlags::BINARY
+            | FileItemFlags::DELETED
+            | FileItemFlags::OVERFLOW
+            | FileItemFlags::SYMLINK
+            | FileItemFlags::SYMLINK_DIR)
         == 0
 );
 
@@ -262,7 +272,7 @@ pub struct FileItem {
     pub git_status: Option<git2::Status>,
     pub(crate) path: crate::simd_path::ChunkedString,
     pub(crate) parent_dir_index: u32,
-    flags: AtomicU8,
+    flags: AtomicU16,
     /// Lazy mmap cache (boxed, set once). Only populated by the actual file
     /// read, controlled by the budget. Null while empty.
     #[cfg(not(target_os = "windows"))]
@@ -287,7 +297,7 @@ impl Clone for FileItem {
             modification_frecency_score: self.modification_frecency_score,
             git_recency_score: self.git_recency_score,
             git_status: self.git_status,
-            flags: AtomicU8::new(self.flags.load(Ordering::Relaxed)),
+            flags: AtomicU16::new(self.flags.load(Ordering::Relaxed)),
             // on clone we have to reset the content cache
             #[cfg(not(target_os = "windows"))]
             content: AtomicPtr::new(std::ptr::null_mut()),
@@ -315,7 +325,7 @@ impl FileItem {
         git_status: Option<git2::Status>,
         is_binary: bool,
     ) -> Self {
-        let mut flags = 0u8;
+        let mut flags = 0u16;
         if is_binary {
             flags |= FileItemFlags::BINARY;
         }
@@ -332,7 +342,7 @@ impl FileItem {
             modification_frecency_score: 0,
             git_recency_score: 0,
             git_status,
-            flags: AtomicU8::new(flags),
+            flags: AtomicU16::new(flags),
             #[cfg(not(target_os = "windows"))]
             content: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -551,7 +561,7 @@ impl FileItem {
     }
 
     pub(crate) fn mark_definition_language(&mut self, filename: &str) {
-        let language = crate::definition::Language::from_filename(filename) as u8;
+        let language = crate::definition::Language::from_filename(filename) as u16;
         let flags = self.flags.get_mut();
         *flags = (*flags & !FileItemFlags::DEFINITION_LANGUAGE_MASK) | (language << 3);
     }
@@ -562,7 +572,7 @@ impl FileItem {
         let flags = self.flags.load(Ordering::Relaxed);
         flags & (FileItemFlags::BINARY | FileItemFlags::DELETED) == 0
             && crate::definition::is_definition_match(
-                (flags & FileItemFlags::DEFINITION_LANGUAGE_MASK) >> 3,
+                ((flags & FileItemFlags::DEFINITION_LANGUAGE_MASK) >> 3) as u8,
                 line.as_bytes(),
                 ranges,
                 false,
@@ -578,7 +588,7 @@ impl FileItem {
         let flags = self.flags.load(Ordering::Relaxed);
         flags & (FileItemFlags::BINARY | FileItemFlags::DELETED) == 0
             && crate::definition::is_definition_match(
-                (flags & FileItemFlags::DEFINITION_LANGUAGE_MASK) >> 3,
+                ((flags & FileItemFlags::DEFINITION_LANGUAGE_MASK) >> 3) as u8,
                 line,
                 ranges,
                 fuzzy,
@@ -672,6 +682,38 @@ impl FileItem {
         } else {
             self.flags
                 .fetch_and(!FileItemFlags::OVERFLOW, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    pub fn is_symlink(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & FileItemFlags::SYMLINK != 0
+    }
+
+    #[inline]
+    pub fn set_symlink(&self, val: bool) {
+        if val {
+            self.flags
+                .fetch_or(FileItemFlags::SYMLINK, Ordering::Relaxed);
+        } else {
+            self.flags
+                .fetch_and(!FileItemFlags::SYMLINK, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    pub fn is_symlink_dir(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & FileItemFlags::SYMLINK_DIR != 0
+    }
+
+    #[inline]
+    pub fn set_symlink_dir(&self, val: bool) {
+        if val {
+            self.flags
+                .fetch_or(FileItemFlags::SYMLINK_DIR, Ordering::Relaxed);
+        } else {
+            self.flags
+                .fetch_and(!FileItemFlags::SYMLINK_DIR, Ordering::Relaxed);
         }
     }
 }

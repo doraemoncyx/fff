@@ -77,6 +77,7 @@ fn file_item_into_lua(item: &FileItem, lua: &Lua, picker: &FilePicker) -> LuaRes
     table.set("git_status", format_git_status(item.git_status))?;
     table.set("git_recency_score", item.git_recency_score)?;
     table.set("is_binary", item.is_binary())?;
+    table.set("is_symlink", item.is_symlink())?;
     Ok(LuaValue::Table(table))
 }
 

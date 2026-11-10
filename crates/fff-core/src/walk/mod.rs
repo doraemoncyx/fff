@@ -70,6 +70,9 @@ impl WalkIgnoreRules {
 }
 
 #[cfg(test)]
+mod symlink_tests;
+
+#[cfg(test)]
 mod tests {
     use super::walk_collect_files;
     use std::fs;

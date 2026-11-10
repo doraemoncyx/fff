@@ -68,6 +68,17 @@ pub(crate) fn walk_collect_files(
     // dir, so this keeps one mutex acquisition per entry.
     let collected = Mutex::new((Vec::new(), Vec::new()));
 
+    let push_pair = |item: FileItem, rel_str: String| {
+        let mut guard = collected.lock();
+        guard.0.push((item, rel_str));
+        let n = guard.0.len();
+        drop(guard);
+
+        if n % PROGRESS_STEP == 0 {
+            synced_files_count.store(n, Ordering::Relaxed);
+        }
+    };
+
     let outcome = match builder.run(|entry| {
         if ignore_options.disable_git && entry.path().file_name().is_some_and(|name| name == ".git")
         {
@@ -81,6 +92,49 @@ pub(crate) fn walk_collect_files(
             if !path.starts_with(scope) {
                 return WalkState::SkipDir;
             }
+        }
+
+        // Symlinks are indexed unconditionally, classified by target type:
+        // symlink→file becomes a searchable file, symlink→dir becomes a dir
+        // marker (filtered from the file table in walk_filesystem).
+        if entry.is_symlink() {
+            let rel_str = entry.relative_path_lossy().into_owned();
+            // is_symlink() is lstat-like; stat the target for type + size.
+            let Ok(target) = std::fs::metadata(entry.path()) else {
+                return WalkState::Continue; // dangling link
+            };
+
+            if target.is_dir() {
+                // Dir marker: whole relative path is the dir portion.
+                let mut rel_dir = rel_str.clone();
+                rel_dir.push('/');
+                let offset = rel_dir.len() as u16;
+                let item = FileItem::new_raw(offset, 0, 0, None, false);
+                item.set_symlink_dir(true);
+                push_pair(item, rel_dir);
+            } else {
+                let modified = target
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs());
+                let basename_offset = entry.basename_offset_in_relative_lossy();
+                let basename = &rel_str[basename_offset..];
+                let is_binary = is_known_binary_extension_basename(basename)
+                    && (!is_ambiguous_binary_name(basename)
+                        || starts_with_binary_content(entry.path()));
+                let mut item = FileItem::new_raw(
+                    basename_offset as u16,
+                    target.len(),
+                    modified,
+                    None,
+                    is_binary,
+                );
+                item.mark_definition_language(basename);
+                item.set_symlink(true);
+                push_pair(item, rel_str);
+            }
+            return WalkState::Continue;
         }
 
         // Followed links keep the Symlink kind and lstat metadata, so stat
