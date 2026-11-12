@@ -767,6 +767,7 @@ dependencies = [
  "dunce",
  "fff-search",
  "form_urlencoded",
+ "git2",
  "globset",
  "libmimalloc-sys",
  "mimalloc",

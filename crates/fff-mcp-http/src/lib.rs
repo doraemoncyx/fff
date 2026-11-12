@@ -4,6 +4,7 @@ mod config;
 mod cursor;
 mod error;
 mod index;
+mod mcp;
 mod params;
 mod registry;
 mod root;

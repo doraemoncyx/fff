@@ -64,6 +64,26 @@ impl TestServer {
         assert_eq!(response.status, 200, "stats failed: {}", response.body);
         serde_json::from_str(&response.body).expect("stats returns JSON")
     }
+
+    pub fn mcp(&self, message: serde_json::Value) -> serde_json::Value {
+        let body = serde_json::to_string(&message).unwrap();
+        let response = self.post(
+            "/mcp",
+            &body,
+            &[("Accept", "application/json, text/event-stream")],
+        );
+        assert_eq!(response.status, 200, "mcp failed: {}", response.body);
+        serde_json::from_str(&response.body).expect("mcp returns JSON")
+    }
+
+    pub fn mcp_call(&self, id: u64, arguments: serde_json::Value) -> serde_json::Value {
+        self.mcp(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": "find_files", "arguments": arguments }
+        }))
+    }
 }
 
 impl Drop for TestServer {
@@ -95,6 +115,11 @@ pub fn write_tree(root: &Path, files: &[&str]) {
         }
         std::fs::write(path, "placeholder").unwrap();
     }
+}
+
+/// Make the tree a git repo: hidden files are only walked inside one.
+pub fn make_git_repo(root: &Path) {
+    git2::Repository::init(root).expect("init git repo");
 }
 
 pub fn encode(params: &[(&str, &str)]) -> String {

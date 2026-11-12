@@ -3,9 +3,12 @@ use std::sync::Arc;
 use axum::extract::{RawQuery, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::json;
 
 use crate::error::ApiError;
+use crate::mcp::FindFilesServer;
 use crate::params::Params;
 use crate::registry::Registry;
 use crate::search::SearchResponse;
@@ -14,10 +17,20 @@ use crate::stats::StatsResponse;
 pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("FFF_GIT_HASH"), ")");
 
 pub(crate) fn router(registry: Arc<Registry>) -> Router {
+    let mcp_registry = registry.clone();
+    let mcp = StreamableHttpService::new(
+        move || Ok(FindFilesServer::new(mcp_registry.clone())),
+        Arc::new(NeverSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_stateful_mode(false)
+            .with_json_response(true),
+    );
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/search", get(search))
         .route("/stats", get(stats))
+        .route_service("/mcp", mcp)
         .with_state(registry)
 }
 
