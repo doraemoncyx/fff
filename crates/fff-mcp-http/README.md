@@ -156,6 +156,17 @@ own `<stem>+<timestamp>+<pid>.log` under `%LOCALAPPDATA%\fff\` (or
 
 ## Building
 
+From the repo root, `build_fff_mcp_http.py` finds or downloads zig and builds
+the release binary (`--debug` for the dev profile, extra args go to cargo,
+`FFF_FEATURES` overrides the `zlob` default):
+
+```powershell
+python build_fff_mcp_http.py
+python build_fff_mcp_http.py --debug
+```
+
+Or drive cargo yourself:
+
 ```powershell
 $env:ZIG = 'H:\code\rust\fff\tools\zig-0.17.1\zig.exe'
 cargo build -p fff-mcp-http --no-default-features --features zlob
