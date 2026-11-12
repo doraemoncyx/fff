@@ -1,0 +1,163 @@
+# fff-mcp-http
+
+A long-lived file finder that takes a query **and** a target directory (tardir)
+per request. Every tardir becomes a **Root** with its own index; indexes for
+parent and child directories are kept side by side, merged per request, and
+evicted on a memory budget instead of being destroyed on every directory
+switch.
+
+```
+fff-mcp-http --port 8737 --max-memory 3G
+curl 'http://127.0.0.1:8737/search?querystr=*.png&tardir=F:%5Cwork%5Cgame%5Cmhimage'
+```
+
+Start it once, then query any directory on any drive without restarting or
+re-indexing what is already known.
+
+## Endpoints
+
+| route | purpose |
+| --- | --- |
+| `GET /search?querystr=…&tardir=…` | same JSON as the MCP tool, for scripts and curl |
+| `POST /mcp` | Streamable HTTP MCP, stateless, JSON responses (no SSE) |
+| `GET /stats` | global memory, budget, and one entry per Index in LRU order |
+| `GET /healthz` | liveness probe; never authenticated |
+
+`/search` and the `find_files` MCP tool accept identical parameters, so a
+client switching between the stdio `fff-mcp` server and this one only changes
+its URL.
+
+```json
+{
+  "results": [{ "path": "F:\\wg\\mhimage\\data\\a.png", "rel": "data/a.png", "score": 1234, "is_dir": false }],
+  "total": 137,
+  "scanned": 204311,
+  "scanning": false,
+  "served_by": ["F:\\wg\\mhimage", "F:\\wg\\mhimage\\data"],
+  "merged": true,
+  "cursor": "b3f1a0c9d27e4455"
+}
+```
+
+`total` is the match count, not the page size. `scanning: true` means the
+index was still being built and the results are partial — retry the same
+request to get the complete set. `served_by` names the Roots that were merged;
+`cursor` only appears when another page exists.
+
+## Parameters
+
+Required: `querystr` (aliases `query`, `pattern`; a JSON array is joined with
+spaces) and `tardir` (absolute path; the directory is indexed on demand and an
+error is returned if it does not exist).
+
+Optional, same semantics as `fff-mcp`: `path`, `paths`, `globs` (`!` prefix
+excludes), `hidden` (default `true`), `mode` (`fuzzy` default, `glob`,
+`regex`), `filters` (regex AND), `maxResults` (default 20, clamped to
+1..=10000), `cursor`. `path` and `paths` are relative to `tardir`; absolute
+paths must stay inside it and `..` is rejected.
+
+## How directory switching behaves
+
+- A deeper tardir inside an existing Root reuses that Root's index and narrows
+  the query with a subtree glob — no rescan.
+- A parent tardir with child Roots below it queries all of them and merges by
+  absolute path, so results arrive before the parent's own scan finishes.
+- When the parent's scan completes, the child Roots below it are dropped
+  (subsumed); registry state converges regardless of request order.
+- A tardir never covered by an existing Root gets its own index.
+
+## Memory
+
+`--max-memory` (default `3G`, accepts `512MB`, `3GB`, bare bytes) bounds the
+process footprint as reported by the OS (`PrivateUsage` on Windows, `VmRSS` on
+Linux), not an estimate from file counts. When the budget is exceeded the
+least recently requested Root is dropped, at most three per round, never one
+serving the current request, and never the last one. A single Root larger than
+the whole budget is kept with a warning rather than thrashing.
+
+`/stats` reports `used_bytes`, `budget_bytes`, and per-Index
+`root`/`files`/`dirs`/`scanning`/`last_used`/`estimated_bytes`, ordered by
+least recently used.
+
+## Scans
+
+At most `--max-concurrent-scans` (default 2) initial scans run at once; the
+rest queue. A request waits at most `--scan-wait-secs` (default 20) and then
+answers with whatever is indexed so far. Concurrent requests for the same
+tardir share one scan.
+
+## Skipping files
+
+Built-in skips: `.svn/`, `.hg/`, `CVS/`. Disable with `--no-default-skips`;
+extend with repeatable `--skip "<gitignore pattern>"`. `--no-git` stops reading
+gitignore rules and `--no-ignore-files` stops reading `.ignore`. Skip rules
+apply when an Index is created, so changing them affects new Roots only — use a
+restart (or a different tardir) to rescan an existing Root.
+
+All of the above require the `zlob` walker; a ripgrep-only build refuses to
+start with skip options rather than silently indexing everything.
+
+## Access control
+
+The default bind is `127.0.0.1`. Binding to any other address requires
+`--token`; then every endpoint except `/healthz` needs
+`Authorization: Bearer <token>`, and `/mcp` additionally validates the `Host`
+header against the loopback defaults plus any `allowed_hosts` from the config
+file (DNS-rebinding protection).
+
+```powershell
+# generate a token
+-join ((48..57) + (97..102) | Get-Random -Count 32 | % { [char]$_ })
+```
+
+## Configuration file
+
+`--config <path>` accepts a TOML file; command-line flags win, and `skip`
+lists are merged.
+
+```toml
+skip = ["*.bak", "cache/"]
+max_memory = "3G"
+bind = "127.0.0.1"
+port = 8737
+token = "…"
+scan_wait_secs = 20
+max_concurrent_scans = 2
+evict_interval_secs = 30
+no_watch = false
+follow_symlinks = false
+frecency_db = "C:/Users/me/AppData/Local/fff/frecency"
+log_file = "C:/Users/me/AppData/Local/fff/fff_mcp_http.log"
+log_level = "info"
+default_skips = true
+disable_git = false
+disable_ignore_files = false
+idle_timeout_secs = 3600
+allowed_hosts = ["build-box.local"]
+```
+
+## Lifecycle
+
+`--idle-timeout-secs` (default 3600, `0` disables) exits the process after that
+long without a request; `/healthz` deliberately does not count as activity.
+Ctrl-C and SIGTERM stop every watcher before exiting. Each launch writes its
+own `<stem>+<timestamp>+<pid>.log` under `%LOCALAPPDATA%\fff\` (or
+`$XDG_STATE_HOME/fff/`), so concurrent instances never share a file.
+
+## Known limitations
+
+- Scores from different Roots are only approximately comparable: `fff-core`
+  ranks against each Root's own base path, and rescoring by tardir-relative
+  path is not exposed. This only affects path-shape queries during the window
+  where a parent is still scanning.
+- No content search (`grep`/`multi_grep`); content indexing is off because this
+  service is memory-bound.
+- No index persistence: a restart rescans.
+
+## Building
+
+```powershell
+$env:ZIG = 'H:\code\rust\fff\tools\zig-0.17.1\zig.exe'
+cargo build -p fff-mcp-http --no-default-features --features zlob
+cargo test  -p fff-mcp-http --no-default-features --features zlob
+```
