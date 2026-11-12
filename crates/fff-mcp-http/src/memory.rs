@@ -1,6 +1,6 @@
 /// Process memory in bytes. The one seam the service lets a test replace.
 pub trait MemoryProbe: Send + Sync {
-    /// Private resident bytes, or `None` when the OS counter is unavailable.
+    // Private resident bytes, or `None` when the OS counter is unavailable.
     fn used_bytes(&self) -> Option<u64>;
 }
 
@@ -13,7 +13,7 @@ impl MemoryProbe for OsMemoryProbe {
     }
 }
 
-/// Return freed pages to the allocator after an eviction.
+// Return freed pages to the allocator after an eviction.
 pub(crate) fn collect_allocator() {
     // SAFETY: mi_collect only reclaims mimalloc pages of the calling heap.
     unsafe { libmimalloc_sys::mi_collect(true) };

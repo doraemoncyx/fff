@@ -11,7 +11,7 @@ use crate::memory::{MemoryProbe, OsMemoryProbe};
 use crate::registry::Registry;
 
 const SUBSUME_INTERVAL: Duration = Duration::from_millis(500);
-/// How often the idle watchdog compares the activity clock with the timeout.
+// How often the idle watchdog compares the activity clock with the timeout.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
 /// Handle to a running server: bound address plus a shutdown switch.
@@ -148,7 +148,7 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     tracing::info!("shutdown complete");
 }
 
-/// Exit after `idle_timeout` without a request; `/healthz` must not reset it.
+// Exit after `idle_timeout` without a request; `/healthz` must not reset it.
 async fn idle_watchdog(registry: Arc<Registry>, stop: watch::Sender<bool>) {
     let timeout = registry.config().idle_timeout;
     if timeout.is_zero() {
@@ -204,8 +204,8 @@ async fn shutdown_signals(stop: watch::Sender<bool>) {
     let _ = stop.send(true);
 }
 
-/// Scans finish on their own schedule; this lets subsumption and the
-/// post-scan eviction trigger happen without waiting for a request.
+// Scans finish on their own schedule; this lets subsumption and the
+// post-scan eviction trigger happen without waiting for a request.
 async fn housekeeping_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
     loop {
         tokio::select! {
@@ -222,7 +222,7 @@ async fn housekeeping_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bo
     }
 }
 
-/// Background eviction trigger: measure the real footprint every interval.
+// Background eviction trigger: measure the real footprint every interval.
 async fn eviction_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
     let interval = registry.config().evict_interval;
     loop {

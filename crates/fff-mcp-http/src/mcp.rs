@@ -11,7 +11,7 @@ const INSTRUCTIONS: &str = "Find indexed files by path fragment, glob, or regex.
 the server indexes it on demand, keeps indexes for parent and child directories and merges their results. \
 Results carry absolute paths and paths relative to tardir.";
 
-/// Stateless MCP surface exposing the same `find_files` tool as `fff-mcp`.
+// Stateless MCP surface exposing the same `find_files` tool as `fff-mcp`.
 #[derive(Clone)]
 pub struct FindFilesServer {
     registry: Arc<Registry>,

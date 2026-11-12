@@ -5,86 +5,86 @@ use clap::Parser;
 
 use crate::config::{Config, parse_memory};
 
-/// Long-lived multi-root file finder: one request names a query and a tardir.
+// Long-lived multi-root file finder: one request names a query and a tardir.
 #[derive(Debug, Parser)]
 #[command(
     name = "fff-mcp-http",
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("FFF_GIT_HASH"), ")")
 )]
 pub struct Args {
-    /// TOML config file; command-line flags override its values.
+    // TOML config file; command-line flags override its values.
     #[arg(long)]
     pub config: Option<PathBuf>,
 
-    /// Address to bind. Defaults to loopback.
+    // Address to bind. Defaults to loopback.
     #[arg(long)]
     pub bind: Option<IpAddr>,
 
-    /// TCP port.
+    // TCP port.
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Bearer token required for every endpoint except /healthz.
+    // Bearer token required for every endpoint except /healthz.
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Index memory budget, e.g. 3G, 512MB or a byte count.
+    // Index memory budget, e.g. 3G, 512MB or a byte count.
     #[arg(long, value_parser = parse_memory)]
     pub max_memory: Option<u64>,
 
-    /// Longest time a request waits for a scan before returning partial results.
+    // Longest time a request waits for a scan before returning partial results.
     #[arg(long)]
     pub scan_wait_secs: Option<u64>,
 
-    /// Upper bound on concurrently running initial scans.
+    // Upper bound on concurrently running initial scans.
     #[arg(long)]
     pub max_concurrent_scans: Option<usize>,
 
-    /// How often the background eviction tick measures memory.
+    // How often the background eviction tick measures memory.
     #[arg(long)]
     pub evict_interval_secs: Option<u64>,
 
-    /// Disable the filesystem watcher; indexes stay at their initial snapshot.
+    // Disable the filesystem watcher; indexes stay at their initial snapshot.
     #[arg(long)]
     pub no_watch: bool,
 
-    /// Follow symlinks while walking.
+    // Follow symlinks while walking.
     #[arg(long)]
     pub follow_symlinks: bool,
 
-    /// Frecency database path. Disabled when omitted.
+    // Frecency database path. Disabled when omitted.
     #[arg(long)]
     pub frecency_db: Option<PathBuf>,
 
-    /// Log file path-shape hint; each launch writes a fresh timestamped sibling.
+    // Log file path-shape hint; each launch writes a fresh timestamped sibling.
     #[arg(long)]
     pub log_file: Option<PathBuf>,
 
-    /// Log level (trace, debug, info, warn, error).
+    // Log level (trace, debug, info, warn, error).
     #[arg(long)]
     pub log_level: Option<String>,
 
-    /// Exit after this many idle seconds. 0 disables.
+    // Exit after this many idle seconds. 0 disables.
     #[arg(long)]
     pub idle_timeout_secs: Option<u64>,
 
-    /// Extra gitignore-style skip pattern, repeatable.
+    // Extra gitignore-style skip pattern, repeatable.
     #[arg(long = "skip", value_name = "PATTERN")]
     pub skip: Vec<String>,
 
-    /// Drop the built-in .svn/, .hg/ and CVS/ skip rules.
+    // Drop the built-in .svn/, .hg/ and CVS/ skip rules.
     #[arg(long)]
     pub no_default_skips: bool,
 
-    /// Do not read .gitignore rules and skip Git integration.
+    // Do not read .gitignore rules and skip Git integration.
     #[arg(long)]
     pub no_git: bool,
 
-    /// Do not read .ignore files.
+    // Do not read .ignore files.
     #[arg(long)]
     pub no_ignore_files: bool,
 
-    /// Test-only: expose POST /test/evict.
+    // Test-only: expose POST /test/evict.
     #[arg(long, hide = true)]
     pub test_hook: bool,
 }
@@ -160,7 +160,7 @@ impl Args {
     }
 }
 
-/// Flags without the config file; `--config` needs IO, so prefer `into_config`.
+// Flags without the config file; `--config` needs IO, so prefer `into_config`.
 impl From<Args> for Config {
     fn from(args: Args) -> Self {
         let mut config = Self::default();

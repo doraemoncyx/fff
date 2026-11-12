@@ -10,7 +10,7 @@ use fff::{
 use crate::config::Config;
 use crate::error::ApiError;
 
-/// One indexed Root and the bookkeeping the registry needs around it.
+// One indexed Root and the bookkeeping the registry needs around it.
 pub(crate) struct Index {
     root: PathBuf,
     key: String,

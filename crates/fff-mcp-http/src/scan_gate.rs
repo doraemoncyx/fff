@@ -12,7 +12,7 @@ struct Permits {
     started: u64,
 }
 
-/// Upper bound on in-flight initial scans; excess requests queue with a deadline.
+// Upper bound on in-flight initial scans; excess requests queue with a deadline.
 pub(crate) struct ScanGate {
     limit: usize,
     permits: Mutex<Permits>,
@@ -65,7 +65,7 @@ impl ScanGate {
     }
 }
 
-/// One in-flight initial scan; dropped when the walk publishes its last file.
+// One in-flight initial scan; dropped when the walk publishes its last file.
 pub(crate) struct ScanPermit {
     gate: Arc<ScanGate>,
 }
@@ -95,7 +95,7 @@ pub(crate) enum SlotWait {
     TimedOut,
 }
 
-/// One Root's pending creation: its first request scans, the rest wait here.
+// One Root's pending creation: its first request scans, the rest wait here.
 pub(crate) struct ScanSlot {
     inner: Mutex<SlotInner>,
     changed: Condvar,

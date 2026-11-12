@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 const MAX_CURSORS: usize = 20;
 
-/// Opaque page cursors. IDs are salted hashes, not offsets.
+// Opaque page cursors. IDs are salted hashes, not offsets.
 pub(crate) struct CursorStore {
     counter: u64,
     salt: u64,

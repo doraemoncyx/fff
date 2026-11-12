@@ -25,7 +25,6 @@ zlob = ["fff/zlob"]
 [dependencies]
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
-dunce = { workspace = true }
 fff = { package = "fff-search", path = "../fff-core", default-features = false, version = "0.11.0", features = ["mimalloc-collect"] }
 form_urlencoded = "1"
 globset = { workspace = true }
@@ -49,5 +48,6 @@ windows-sys = { version = "0.60", features = [
 ] }
 
 [dev-dependencies]
+dunce = { workspace = true }
 git2 = { workspace = true }
 tempfile = "3.8"

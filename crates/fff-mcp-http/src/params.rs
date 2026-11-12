@@ -18,10 +18,10 @@ pub enum Mode {
     Regex,
 }
 
-/// Request parameters shared by `GET /search` and the `find_files` MCP tool.
+// Request parameters shared by `GET /search` and the `find_files` MCP tool.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct Params {
-    /// Fuzzy filename or path query. Empty lists everything in scope.
+    // Fuzzy filename or path query. Empty lists everything in scope.
     #[serde(
         alias = "query",
         alias = "pattern",
@@ -30,25 +30,25 @@ pub struct Params {
     pub querystr: String,
     /// Absolute directory to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
-    /// Directory, filename, or one glob relative to tardir.
+    // Directory, filename, or one glob relative to tardir.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub path: Option<String>,
-    /// Multiple tardir-relative paths. An empty string means the whole tardir.
+    // Multiple tardir-relative paths. An empty string means the whole tardir.
     #[serde(default, deserialize_with = "deserialize_strings")]
     pub paths: Vec<String>,
-    /// Include glob patterns (OR). Prefix with ! to exclude.
+    // Include glob patterns (OR). Prefix with ! to exclude.
     #[serde(default, deserialize_with = "deserialize_strings")]
     pub globs: Vec<String>,
-    /// Include hidden paths (default true).
+    // Include hidden paths (default true).
     #[serde(default)]
     pub hidden: Option<bool>,
-    /// fuzzy (default), glob, or regex.
+    // fuzzy (default), glob, or regex.
     #[serde(default)]
     pub mode: Option<Mode>,
-    /// Additional regex filters on the tardir-relative path (AND).
+    // Additional regex filters on the tardir-relative path (AND).
     #[serde(default, deserialize_with = "deserialize_strings")]
     pub filters: Vec<String>,
-    /// Max results per page (default 20).
+    // Max results per page (default 20).
     #[serde(
         rename = "maxResults",
         alias = "limit",
@@ -56,10 +56,10 @@ pub struct Params {
         deserialize_with = "deserialize_optional_number"
     )]
     pub max_results: Option<f64>,
-    /// Opaque cursor from a previous response.
+    // Opaque cursor from a previous response.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub cursor: Option<String>,
-    /// Raw offset when no cursor is used.
+    // Raw offset when no cursor is used.
     #[serde(default, deserialize_with = "deserialize_optional_number")]
     pub offset: Option<f64>,
 }
@@ -119,7 +119,7 @@ pub(crate) enum PathSpec {
     Glob(String),
 }
 
-/// Validated request ready for execution.
+// Validated request ready for execution.
 pub(crate) struct Query {
     pub raw: String,
     pub tardir: PathBuf,
@@ -176,7 +176,7 @@ impl Query {
 pub(crate) fn normalize_limit(raw: Option<f64>) -> usize {
     match raw {
         None => DEFAULT_LIMIT,
-        Some(value) if !value.is_finite() || value <= 0.0 => DEFAULT_LIMIT,
+        Some(value) if !value.is_finite() => DEFAULT_LIMIT,
         Some(value) => (value.round() as usize).clamp(1, MAX_LIMIT),
     }
 }
@@ -190,7 +190,7 @@ fn resolve_path(raw: &str, tardir: &Path) -> Result<PathSpec, ApiError> {
     }
 }
 
-/// Normalize a tardir-relative path to `/`-separated text, rejecting escapes.
+// Normalize a tardir-relative path to `/`-separated text, rejecting escapes.
 fn resolve_relative(raw: &str, tardir: &Path) -> Result<String, ApiError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -409,7 +409,8 @@ mod tests {
     #[test]
     fn limit_is_clamped_and_defaulted() {
         assert_eq!(normalize_limit(None), DEFAULT_LIMIT);
-        assert_eq!(normalize_limit(Some(0.0)), DEFAULT_LIMIT);
+        assert_eq!(normalize_limit(Some(0.0)), 1);
+        assert_eq!(normalize_limit(Some(-3.0)), 1);
         assert_eq!(normalize_limit(Some(f64::NAN)), DEFAULT_LIMIT);
         assert_eq!(normalize_limit(Some(5.4)), 5);
         assert_eq!(normalize_limit(Some(1e9)), MAX_LIMIT);

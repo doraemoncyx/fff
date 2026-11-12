@@ -16,7 +16,7 @@ pub const DEFAULT_CONCURRENT_SCANS: usize = 2;
 pub const DEFAULT_EVICT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
-/// rmcp's own loopback allowlist; config entries are added to it.
+// rmcp's own loopback allowlist; config entries are added to it.
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 pub const TOKEN_HINT: &str = "generate one with `openssl rand -hex 24`, \
@@ -148,7 +148,7 @@ impl Config {
     }
 }
 
-/// Keys accepted by `--config`. Every key is optional; absent means default.
+// Keys accepted by `--config`. Every key is optional; absent means default.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {

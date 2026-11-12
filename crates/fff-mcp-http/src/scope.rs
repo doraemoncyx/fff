@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::error::ApiError;
 use crate::params::PathSpec;
 
-/// Scope fields that become glob constraints on the index.
+// Scope fields that become glob constraints on the index.
 pub(crate) struct ScopeInput<'a> {
     pub path: Option<&'a PathSpec>,
     pub paths: &'a [String],
@@ -11,8 +11,8 @@ pub(crate) struct ScopeInput<'a> {
     pub hidden: Option<bool>,
 }
 
-/// Build Root-relative include/exclude globs for one index.
-/// `prefix` is the tardir relative to that Root, empty when they are equal.
+// Build Root-relative include/exclude globs for one index.
+// `prefix` is the tardir relative to that Root, empty when they are equal.
 pub(crate) fn patterns(
     input: &ScopeInput<'_>,
     picker: &fff::FilePicker,
@@ -179,7 +179,7 @@ pub(crate) fn constraints(
     })
 }
 
-/// Escape glob metacharacters so a literal path keeps its name.
+// Escape glob metacharacters so a literal path keeps its name.
 pub(crate) fn escape_glob(path: &str) -> String {
     let mut escaped = String::with_capacity(path.len());
     for c in path.chars() {
@@ -207,7 +207,7 @@ fn with_prefix(prefix: &str, pattern: &str) -> String {
     }
 }
 
-/// Build a Root-relative pattern from a tardir-relative one.
+// Build a Root-relative pattern from a tardir-relative one.
 pub(crate) fn prefix_pattern(prefix: &str, pattern: &str) -> String {
     with_prefix(prefix, pattern)
 }

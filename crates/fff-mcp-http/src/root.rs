@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ApiError;
 
-/// Canonicalize a tardir. Root identity is the canonical path, so `..`,
-/// trailing separators, case and `\\?\` spellings all collapse onto one key.
+// Canonicalize a tardir. Root identity is the canonical path, so `..`,
+// trailing separators, case and `\\?\` spellings all collapse onto one key.
 pub(crate) fn canonical_dir(raw: &str) -> Result<PathBuf, ApiError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -23,7 +23,7 @@ pub(crate) fn canonical_dir(raw: &str) -> Result<PathBuf, ApiError> {
     Ok(canonical)
 }
 
-/// Registry key for a canonical Root.
+// Registry key for a canonical Root.
 pub(crate) fn root_key(path: &Path) -> String {
     let text = normalized_text(path);
     if cfg!(windows) {
@@ -33,23 +33,25 @@ pub(crate) fn root_key(path: &Path) -> String {
     }
 }
 
-/// True when `child` lies strictly below `parent`.
-pub(crate) fn is_strict_descendant(child: &Path, parent: &Path) -> bool {
-    let child = root_key(child);
-    let parent = root_key(parent);
-    child.len() > parent.len() && child.starts_with(&parent) && {
-        let rest = &child[parent.len()..];
-        rest.starts_with('/')
-    }
+// True when `child_key` lies strictly below `parent_key`; both from `root_key`.
+pub(crate) fn key_is_strict_descendant(child_key: &str, parent_key: &str) -> bool {
+    child_key
+        .strip_prefix(parent_key)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// True when `root` is the tardir or an ancestor of it.
+// True when `child` lies strictly below `parent`.
+pub(crate) fn is_strict_descendant(child: &Path, parent: &Path) -> bool {
+    key_is_strict_descendant(&root_key(child), &root_key(parent))
+}
+
+// True when `root` is the tardir or an ancestor of it.
 pub(crate) fn covers(root: &Path, tardir: &Path) -> bool {
     is_strict_descendant(tardir, root) || root_key(root) == root_key(tardir)
 }
 
-/// Path of `tardir` relative to `root` as `/`-separated text, empty when equal.
-/// Keeps the on-disk casing: both sides are canonicalized before this call.
+// Path of `tardir` relative to `root` as `/`-separated text, empty when equal.
+// Keeps the on-disk casing: both sides are canonicalized before this call.
 pub(crate) fn relative_to(tardir: &Path, root: &Path) -> Option<String> {
     if let Ok(rest) = tardir.strip_prefix(root) {
         return Some(rest.to_string_lossy().replace('\\', "/"));

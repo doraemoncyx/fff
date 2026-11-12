@@ -23,9 +23,9 @@ const EVICT_COOLDOWN_MS: u64 = 30_000;
 /// Root -> Index registry shared by every request.
 pub struct Registry {
     roots: RwLock<Vec<Arc<Index>>>,
-    /// Roots whose first Index is being created, so callers join one scan.
+    // Roots whose first Index is being created, so callers join one scan.
     creating: Mutex<HashMap<String, Arc<ScanSlot>>>,
-    /// Roots whose creation gave up its permit wait; retried by the housekeeping tick.
+    // Roots whose creation gave up its permit wait; retried by the housekeeping tick.
     deferred: Mutex<HashMap<String, std::path::PathBuf>>,
     scans: Arc<ScanGate>,
     tick: AtomicU64,
@@ -76,9 +76,7 @@ impl Registry {
             tick: AtomicU64::new(0),
             config: Arc::new(config),
             frecency,
-            // Skip rules are captured once per Index at creation: changing them
-            // only affects new Roots, an existing Index keeps its snapshot
-            // until the process restarts.
+            // Skip rules are snapshotted per Index; changed rules need new Roots.
             ignore,
             cursors: Mutex::new(CursorStore::new()),
             last_activity: AtomicU64::new(now_millis()),
@@ -123,9 +121,8 @@ impl Registry {
         self.roots.read().clone()
     }
 
-    /// Find the index for exactly this Root; create it once, however many
-    /// requests arrive at the same time. `None` means the request gave up
-    /// queueing for a scan permit before its deadline.
+    // Create the Index once, however many requests race for this Root; `None`
+    // means this request gave up queueing before its deadline.
     pub(crate) fn ensure_index(
         &self,
         tardir: &Path,
@@ -209,7 +206,7 @@ impl Registry {
         Ok(Some(index))
     }
 
-    /// Drop the map entry only while it still points at `slot`.
+    // Drop the map entry only while it still points at `slot`.
     fn forget_slot(&self, key: &str, slot: &Arc<ScanSlot>) {
         let mut creating = self.creating.lock();
         if creating
@@ -226,7 +223,7 @@ impl Registry {
             .insert(crate::root::root_key(tardir), tardir.to_path_buf());
     }
 
-    /// Start the scans that previously ran out of permit budget.
+    // Start the scans that previously ran out of permit budget.
     pub(crate) fn start_deferred_scans(&self) {
         let pending: Vec<_> = self.deferred.lock().drain().map(|(_, path)| path).collect();
         for tardir in pending {
@@ -241,8 +238,8 @@ impl Registry {
         }
     }
 
-    /// Drop every Index whose Root lies strictly below a finished scan.
-    /// Removal drops registry references only; requests hold their own Arcs.
+    // Drop every Index whose Root lies strictly below a finished scan.
+    // Removal drops registry references only; requests hold their own Arcs.
     pub(crate) fn subsume_finished(&self) {
         let indexes = self.indices();
         let finished: Vec<String> = indexes
@@ -257,11 +254,9 @@ impl Registry {
         let mut roots = self.roots.write();
         let before = roots.len();
         roots.retain(|index| {
-            !finished.iter().any(|key| {
-                index.key().len() > key.len()
-                    && index.key().starts_with(key.as_str())
-                    && index.key().as_bytes()[key.len()] == b'/'
-            })
+            !finished
+                .iter()
+                .any(|key| crate::root::key_is_strict_descendant(index.key(), key))
         });
         if roots.len() != before {
             tracing::info!(
@@ -271,7 +266,7 @@ impl Registry {
         }
     }
 
-    /// Measured process usage, falling back to the per-Index estimates.
+    // Measured process usage, falling back to the per-Index estimates.
     pub(crate) fn used_bytes(&self) -> u64 {
         self.probe.used_bytes().unwrap_or_else(|| {
             self.indices()
@@ -281,7 +276,7 @@ impl Registry {
         })
     }
 
-    /// One eviction round: measure, drop the LRU Index outside `serving`, repeat.
+    // One eviction round: measure, drop the LRU Index outside `serving`, repeat.
     pub(crate) fn evict_over_budget(&self, serving: &[Arc<Index>]) -> Vec<String> {
         let mut evicted = Vec::new();
         while evicted.len() < MAX_EVICTIONS_PER_ROUND {
@@ -340,7 +335,7 @@ impl Registry {
         self.evict_over_budget(&[])
     }
 
-    /// Trigger point: a scan finished, so the room it needed may be free.
+    // Trigger point: a scan finished, so the room it needed may be free.
     pub(crate) fn evict_finished_scans(&self) {
         let finished = self
             .indices()
@@ -393,8 +388,8 @@ impl Registry {
     }
 }
 
-/// Least recently used Index that is neither serving this request nor cooling
-/// down after a recent eviction.
+// Least recently used Index that is neither serving this request nor cooling
+// down after a recent eviction.
 fn pick_victim(
     indexes: &[Arc<Index>],
     serving: &[Arc<Index>],
@@ -420,7 +415,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// Hold the permit until the initial walk finishes, then let the next scan in.
+// Hold the permit until the initial walk finishes, then let the next scan in.
 fn release_when_scanned(picker: SharedFilePicker, permit: ScanPermit) {
     let spawned = std::thread::Builder::new()
         .name("fff-scan-permit".into())

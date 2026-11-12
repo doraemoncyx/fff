@@ -55,8 +55,8 @@ pub(crate) fn router(registry: Arc<Registry>) -> Router {
         .with_state(registry)
 }
 
-/// Liveness probe only: it deliberately does not mark activity, so a monitoring
-/// client cannot keep a forgotten index alive past `--idle-timeout-secs`.
+// Liveness probe only: it deliberately does not mark activity, so a monitoring
+// client cannot keep a forgotten index alive past `--idle-timeout-secs`.
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "version": VERSION }))
 }
@@ -78,7 +78,7 @@ async fn stats(State(registry): State<Arc<Registry>>) -> Json<StatsResponse> {
     Json(registry.stats())
 }
 
-/// Test hook: run one eviction round outside any request.
+// Test hook: run one eviction round outside any request.
 async fn force_eviction(State(registry): State<Arc<Registry>>) -> Json<serde_json::Value> {
     let evicted = tokio::task::spawn_blocking(move || registry.evict_now())
         .await
@@ -110,7 +110,7 @@ fn bearer_value(header: &str) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| value.trim())
 }
 
-/// Byte-at-a-time compare that never returns early, so it is not a timing oracle.
+// Byte-at-a-time compare that never returns early, so it is not a timing oracle.
 fn token_matches(expected: &str, provided: &str) -> bool {
     let expected = expected.as_bytes();
     let provided = provided.as_bytes();

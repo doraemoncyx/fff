@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::error::ApiError;
 use crate::index::Index;
-use crate::params::{Mode, Params, Query};
+use crate::params::{Mode, Params, PathSpec, Query};
 use crate::registry::Registry;
 use crate::root;
 use crate::scope::{self, ScopeInput};
@@ -43,7 +43,7 @@ pub(crate) struct Serving {
     pub base: String,
 }
 
-/// The Indexes answering one request, plus whether its own Root is still unindexed.
+// The Indexes answering one request, plus whether its own Root is still unindexed.
 pub(crate) struct ServingPlan {
     pub entries: Vec<Serving>,
     /// True when this tardir needs an Index that could not start in time.
@@ -120,7 +120,9 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
         .collect();
 
     let next = query.offset + page.len();
-    let cursor = (next < total).then(|| registry.store_cursor(next));
+    // Merged totals can over-count paths shared by two Roots, so a short page is
+    // always the last one regardless of what `total` promised.
+    let cursor = (page.len() == query.limit && next < total).then(|| registry.store_cursor(next));
 
     Ok(SearchResponse {
         results: page,
@@ -148,10 +150,8 @@ fn resolve_offset(registry: &Registry, params: &Params) -> usize {
         .unwrap_or(0)
 }
 
-/// Serving set: the deepest Index covering the tardir, plus every Index whose
-/// Root is strictly below it. Scope is evaluated per Root, so an Index below
-/// the tardir answers with its own top matches — that merge only exists while
-/// the parent is scan-in-progress.
+// Serving set: the deepest Index covering the tardir plus every Index below it.
+// Scope is evaluated per Root, so the merge only exists while the parent scans.
 fn serving_set(
     registry: &Registry,
     tardir: &Path,
@@ -210,7 +210,7 @@ fn serving_set(
     })
 }
 
-/// Tardir-relative view of a Root-relative index path.
+// Tardir-relative view of a Root-relative index path.
 fn tardir_relative<'a>(rel: &'a str, entry: &Serving) -> Option<Cow<'a, str>> {
     if entry.base.is_empty() {
         return strip_prefix(rel, &entry.prefix).map(Cow::Borrowed);
@@ -252,22 +252,109 @@ fn evaluate(
     let picker = guard
         .as_ref()
         .ok_or_else(|| ApiError::internal("file picker not initialized"))?;
-    let patterns = scope::patterns(
-        &ScopeInput {
-            path: query.path.as_ref(),
-            paths: &query.paths,
-            globs: &query.globs,
-            hidden: query.hidden,
-        },
-        picker,
-        &entry.prefix,
-    )?;
+    let Some(scoped) = retarget(entry, query) else {
+        return Ok((Vec::new(), 0));
+    };
+    let patterns = scope::patterns(&scoped.scope_input(), picker, &entry.prefix)?;
 
     let fuzzy = query.mode == Mode::Fuzzy && query.filters.is_empty() && !query.raw.is_empty();
     if fuzzy {
         return Ok(fuzzy_search(entry, picker, query, &patterns, capacity));
     }
     literal_search(entry, picker, query, &patterns, capacity)
+}
+
+// The request's scope expressed in one Index's Root-relative space. `None`
+// means the scope cannot reach that Root at all, so it contributes nothing.
+struct Scoped {
+    path: Option<PathSpec>,
+    paths: Vec<String>,
+    globs: Vec<String>,
+    hidden: Option<bool>,
+}
+
+impl Scoped {
+    fn scope_input(&self) -> ScopeInput<'_> {
+        ScopeInput {
+            path: self.path.as_ref(),
+            paths: &self.paths,
+            globs: &self.globs,
+            hidden: self.hidden,
+        }
+    }
+}
+
+fn retarget(entry: &Serving, query: &Query) -> Option<Scoped> {
+    let base = entry.base.as_str();
+    if base.is_empty() {
+        return Some(Scoped {
+            path: query.path.clone(),
+            paths: query.paths.clone(),
+            globs: query.globs.clone(),
+            hidden: query.hidden,
+        });
+    }
+
+    let path = match query.path.as_ref() {
+        None => None,
+        // "the whole tardir" is also "the whole Root" for an Index below it.
+        Some(PathSpec::Prefix(rel)) if rel.is_empty() => Some(PathSpec::Prefix(String::new())),
+        Some(PathSpec::Prefix(rel)) => Some(PathSpec::Prefix(descend(rel, base)?)),
+        Some(PathSpec::Glob(glob)) => Some(PathSpec::Glob(descend(glob, base)?)),
+    };
+
+    let mut requested = 0usize;
+    let mut applied = 0usize;
+    let mut paths = Vec::with_capacity(query.paths.len());
+    for path in &query.paths {
+        if path.is_empty() {
+            paths.push(String::new());
+            continue;
+        }
+        requested += 1;
+        if let Some(inner) = descend(path, base) {
+            paths.push(inner);
+            applied += 1;
+        }
+    }
+    if requested > 0 && applied == 0 {
+        return None;
+    }
+
+    let mut globs = Vec::with_capacity(query.globs.len());
+    for glob in &query.globs {
+        let (pattern, exclude) = match glob.strip_prefix('!') {
+            Some(pattern) => (pattern, true),
+            None => (glob.as_str(), false),
+        };
+        let anchored = pattern.contains('/') && !pattern.starts_with("**/");
+        match descend(pattern, base) {
+            Some(inner) => globs.push(if exclude { format!("!{inner}") } else { inner }),
+            // A bare name or a `**/` pattern holds at any depth; only a
+            // tardir-rooted include outside this Root empties it.
+            None if !anchored => globs.push(glob.clone()),
+            None if exclude => {}
+            None => return None,
+        }
+    }
+
+    Some(Scoped {
+        path,
+        paths,
+        globs,
+        hidden: query.hidden,
+    })
+}
+
+fn descend(pattern: &str, base: &str) -> Option<String> {
+    let pattern = pattern.strip_prefix('/').unwrap_or(pattern);
+    if pattern == base {
+        return Some(String::new());
+    }
+    pattern
+        .strip_prefix(base)?
+        .strip_prefix('/')
+        .map(str::to_string)
 }
 
 fn fuzzy_search(
@@ -466,7 +553,7 @@ fn absolute_key(picker: &fff::FilePicker, rel: &str) -> String {
     }
 }
 
-/// Tardir-relative view of a Root-relative index path.
+// Tardir-relative view of a Root-relative index path.
 fn strip_prefix<'a>(rel: &'a str, prefix: &str) -> Option<&'a str> {
     if prefix.is_empty() {
         return Some(rel);
