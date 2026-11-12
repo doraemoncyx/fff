@@ -55,6 +55,8 @@ pub(crate) fn router(registry: Arc<Registry>) -> Router {
         .with_state(registry)
 }
 
+/// Liveness probe only: it deliberately does not mark activity, so a monitoring
+/// client cannot keep a forgotten index alive past `--idle-timeout-secs`.
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "version": VERSION }))
 }

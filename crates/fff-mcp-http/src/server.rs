@@ -11,6 +11,8 @@ use crate::memory::{MemoryProbe, OsMemoryProbe};
 use crate::registry::Registry;
 
 const SUBSUME_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the idle watchdog compares the activity clock with the timeout.
+const IDLE_TICK: Duration = Duration::from_millis(250);
 
 /// Handle to a running server: bound address plus a shutdown switch.
 pub struct RunningServer {
@@ -120,6 +122,7 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     let app: Router = crate::api::router(registry.clone());
     tokio::spawn(housekeeping_tick(registry.clone(), shutdown.subscribe()));
     tokio::spawn(eviction_tick(registry.clone(), shutdown.subscribe()));
+    tokio::spawn(idle_watchdog(registry.clone(), shutdown.clone()));
     let signal = {
         let mut receiver = shutdown.subscribe();
         async move {
@@ -131,13 +134,7 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
         }
     };
 
-    let ctrlc_sender = shutdown.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("ctrl-c received, shutting down");
-            let _ = ctrlc_sender.send(true);
-        }
-    });
+    tokio::spawn(shutdown_signals(shutdown.clone()));
 
     if let Err(error) = axum::serve(listener, app)
         .with_graceful_shutdown(signal)
@@ -146,7 +143,65 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
         tracing::error!(?error, "server stopped with an error");
     }
 
+    tracing::info!("stopping every index");
     registry.shutdown();
+    tracing::info!("shutdown complete");
+}
+
+/// Exit after `idle_timeout` without a request; `/healthz` must not reset it.
+async fn idle_watchdog(registry: Arc<Registry>, stop: watch::Sender<bool>) {
+    let timeout = registry.config().idle_timeout;
+    if timeout.is_zero() {
+        return;
+    }
+    let mut stopped = stop.subscribe();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(IDLE_TICK) => {}
+            _ = stopped.changed() => return,
+        }
+        if registry.idle_for() >= timeout {
+            tracing::info!(
+                idle_secs = timeout.as_secs(),
+                "exiting after the idle timeout"
+            );
+            let _ = stop.send(true);
+            return;
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn shutdown_signals(stop: watch::Sender<bool>) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(signal) => Some(signal),
+        Err(error) => {
+            tracing::warn!(?error, "cannot listen for SIGTERM");
+            None
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT received, shutting down"),
+        _ = async {
+            match terminate.as_mut() {
+                Some(signal) => {
+                    signal.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        } => tracing::info!("SIGTERM received, shutting down"),
+    }
+    let _ = stop.send(true);
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signals(stop: watch::Sender<bool>) {
+    if tokio::signal::ctrl_c().await.is_ok() {
+        tracing::info!("ctrl-c received, shutting down");
+    }
+    let _ = stop.send(true);
 }
 
 /// Scans finish on their own schedule; this lets subsumption and the

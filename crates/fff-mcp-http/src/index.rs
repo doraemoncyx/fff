@@ -50,6 +50,13 @@ impl Index {
         )
         .map_err(|e| ApiError::invalid_params(format!("cannot index {}: {e}", root.display())))?;
 
+        tracing::debug!(
+            root = %root.display(),
+            watch = config.watch,
+            follow_symlinks = config.follow_symlinks,
+            "scan started"
+        );
+
         Ok(Self {
             root: root.to_path_buf(),
             key: crate::root::root_key(root),
@@ -113,11 +120,22 @@ impl Index {
 
     /// True once, the first time this Index is seen with its walk finished.
     pub fn take_scan_completion(&self) -> bool {
-        if self.progress().scanning {
+        let progress = self.progress();
+        if progress.scanning {
             self.scan_announced.store(false, Ordering::Relaxed);
             return false;
         }
-        !self.scan_announced.swap(true, Ordering::Relaxed)
+        let first = !self.scan_announced.swap(true, Ordering::Relaxed);
+        if first {
+            tracing::debug!(
+                root = %self.root.display(),
+                files = progress.files,
+                dirs = progress.dirs,
+                scanned = progress.scanned,
+                "scan completed"
+            );
+        }
+        first
     }
 
     /// Rough per-index footprint for `/stats`; the eviction decision uses RSS.

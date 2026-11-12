@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use fff_mcp_http::{Config, MemoryProbe, RunningServer, spawn, spawn_with_probe};
@@ -110,6 +110,20 @@ impl TestServer {
             "method": "tools/call",
             "params": { "name": "find_files", "arguments": arguments }
         }))
+    }
+
+    /// Shut down and report whether the serving thread joined within `timeout`.
+    pub fn shutdown_within(mut self, timeout: Duration) -> bool {
+        let Some(server) = self.server.take() else {
+            return true;
+        };
+        server.shutdown();
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            server.wait();
+            let _ = done.send(());
+        });
+        finished.recv_timeout(timeout).is_ok()
     }
 }
 
@@ -233,7 +247,7 @@ fn percent(raw: &str) -> String {
     out
 }
 
-fn request(
+pub fn request(
     addr: SocketAddr,
     method: &str,
     target: &str,

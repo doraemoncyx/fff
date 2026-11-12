@@ -262,6 +262,12 @@ impl Registry {
         while evicted.len() < MAX_EVICTIONS_PER_ROUND {
             let used = self.used_bytes();
             let budget = self.config.max_memory_bytes;
+            tracing::debug!(
+                used_bytes = used,
+                budget_bytes = budget,
+                indexes = self.roots.read().len(),
+                "eviction round memory measurement"
+            );
             if used <= budget {
                 break;
             }

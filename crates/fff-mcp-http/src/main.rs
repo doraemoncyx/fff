@@ -34,10 +34,18 @@ fn main() -> ExitCode {
     match spawn(config) {
         Ok(server) => {
             println!("fff-mcp-http listening on http://{}", server.addr());
+            tracing::info!(
+                version = fff_mcp_http::VERSION,
+                addr = %server.addr(),
+                "fff-mcp-http serving"
+            );
             server.wait();
+            // The tracing appender is non-blocking; give it a moment to flush.
+            std::thread::sleep(std::time::Duration::from_millis(250));
             ExitCode::SUCCESS
         }
         Err(error) => {
+            tracing::error!(%error, "cannot start");
             eprintln!("error: cannot start: {error}");
             ExitCode::FAILURE
         }

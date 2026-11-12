@@ -171,10 +171,22 @@ impl From<Args> for Config {
 
 /// Default log file hint, same layout as `fff-mcp`.
 pub fn default_log_file() -> PathBuf {
-    let base = absolute_env("XDG_STATE_HOME")
-        .or_else(|| absolute_env("LOCALAPPDATA"))
-        .unwrap_or_else(std::env::temp_dir);
+    let base = default_log_base();
     base.join("fff").join("fff_mcp_http.log")
+}
+
+#[cfg(windows)]
+fn default_log_base() -> PathBuf {
+    absolute_env("LOCALAPPDATA")
+        .or_else(|| absolute_env("USERPROFILE").map(|home| home.join("AppData").join("Local")))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+#[cfg(not(windows))]
+fn default_log_base() -> PathBuf {
+    absolute_env("XDG_STATE_HOME")
+        .or_else(|| absolute_env("HOME").map(|home| home.join(".local").join("state")))
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 fn absolute_env(key: &str) -> Option<PathBuf> {
