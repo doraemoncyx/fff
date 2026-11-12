@@ -25,18 +25,15 @@ pub(crate) fn canonical_dir(raw: &str) -> Result<PathBuf, ApiError> {
 
 /// Registry key for a canonical Root.
 pub(crate) fn root_key(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let text = text.strip_prefix("//?/").unwrap_or(&text);
-    let text = text.trim_end_matches('/');
+    let text = normalized_text(path);
     if cfg!(windows) {
         text.to_ascii_lowercase()
     } else {
-        text.to_string()
+        text
     }
 }
 
 /// True when `child` lies strictly below `parent`.
-#[allow(dead_code)] // consumed by the serving-set computation
 pub(crate) fn is_strict_descendant(child: &Path, parent: &Path) -> bool {
     let child = root_key(child);
     let parent = root_key(parent);
@@ -46,12 +43,36 @@ pub(crate) fn is_strict_descendant(child: &Path, parent: &Path) -> bool {
     }
 }
 
+/// True when `root` is the tardir or an ancestor of it.
+pub(crate) fn covers(root: &Path, tardir: &Path) -> bool {
+    is_strict_descendant(tardir, root) || root_key(root) == root_key(tardir)
+}
+
 /// Path of `tardir` relative to `root` as `/`-separated text, empty when equal.
 /// Keeps the on-disk casing: both sides are canonicalized before this call.
-#[allow(dead_code)] // consumed by the serving-set computation
 pub(crate) fn relative_to(tardir: &Path, root: &Path) -> Option<String> {
-    let rest = tardir.strip_prefix(root).ok()?;
-    Some(rest.to_string_lossy().replace('\\', "/"))
+    if let Ok(rest) = tardir.strip_prefix(root) {
+        return Some(rest.to_string_lossy().replace('\\', "/"));
+    }
+    #[cfg(windows)]
+    {
+        // Short-name or differently cased spellings still name the tardir.
+        let tardir_text = normalized_text(tardir);
+        let root_text = normalized_text(root);
+        if tardir_text.len() > root_text.len()
+            && tardir_text[..root_text.len()].eq_ignore_ascii_case(&root_text)
+            && tardir_text.as_bytes()[root_text.len()] == b'/'
+        {
+            return Some(tardir_text[root_text.len() + 1..].to_string());
+        }
+    }
+    None
+}
+
+fn normalized_text(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+    text.trim_end_matches('/').to_string()
 }
 
 #[cfg(test)]

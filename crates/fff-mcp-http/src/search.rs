@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,6 +12,7 @@ use crate::error::ApiError;
 use crate::index::Index;
 use crate::params::{Mode, Params, Query};
 use crate::registry::Registry;
+use crate::root;
 use crate::scope::{self, ScopeInput};
 
 #[derive(Debug, Serialize)]
@@ -34,7 +37,10 @@ pub struct SearchHit {
 
 pub(crate) struct Serving {
     pub index: Arc<Index>,
+    /// tardir relative to this Root; non-empty only for a covering Index.
     pub prefix: String,
+    /// Root relative to the tardir; non-empty only for an Index below it.
+    pub base: String,
 }
 
 pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResponse, ApiError> {
@@ -50,6 +56,10 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
         }
         entry.index.wait_for_scan(remaining);
     }
+
+    // A finished scan subsumes every Index below it. In-flight requests keep
+    // their own Arcs, so this only drops the registry reference.
+    registry.subsume_finished();
 
     let capacity = query.offset.saturating_add(query.limit);
     let mut hits = Vec::new();
@@ -68,9 +78,15 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
         hits.extend(found);
     }
 
+    // Each Index ranks against its own Root, so scores are only approximately
+    // comparable across Roots; the window is bounded by a still-scanning parent.
     hits.sort_by(compare_hits);
+    let collected = hits.len();
     let mut seen = std::collections::HashSet::new();
     hits.retain(|hit| seen.insert(hit.key.clone()));
+    // Duplicates we merged away were counted once per Index; drop them from the
+    // match total so paging does not promise a page that cannot exist.
+    total = total.saturating_sub(collected - hits.len());
 
     let page: Vec<SearchHit> = hits
         .into_iter()
@@ -113,12 +129,72 @@ fn resolve_offset(registry: &Registry, params: &Params) -> usize {
         .unwrap_or(0)
 }
 
-fn serving_set(registry: &Registry, tardir: &std::path::Path) -> Result<Vec<Serving>, ApiError> {
-    let index = registry.ensure_index(tardir)?;
-    Ok(vec![Serving {
-        prefix: String::new(),
-        index,
-    }])
+/// Serving set: the deepest Index covering the tardir, plus every Index whose
+/// Root is strictly below it. Scope is evaluated per Root, so an Index below
+/// the tardir answers with its own top matches — that merge only exists while
+/// the parent is scan-in-progress.
+fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiError> {
+    let registered = registry.indices();
+    let covering = registered
+        .iter()
+        .filter(|index| root::covers(index.root(), tardir))
+        .max_by_key(|index| index.key().len())
+        .cloned();
+
+    let mut serving = Vec::new();
+    match covering {
+        Some(index) => {
+            let prefix = root::relative_to(tardir, index.root()).ok_or_else(|| {
+                ApiError::internal(format!(
+                    "cannot express {} below {}",
+                    tardir.display(),
+                    index.root().display()
+                ))
+            })?;
+            registry.touch(&index);
+            serving.push(Serving {
+                index,
+                prefix,
+                base: String::new(),
+            });
+        }
+        None => {
+            let index = registry.ensure_index(tardir)?;
+            serving.push(Serving {
+                index,
+                prefix: String::new(),
+                base: String::new(),
+            });
+        }
+    }
+
+    let mut below: Vec<Arc<Index>> = registered
+        .into_iter()
+        .filter(|index| root::is_strict_descendant(index.root(), tardir))
+        .collect();
+    below.sort_by_key(|index| index.key().len());
+    for index in below {
+        let base = root::relative_to(index.root(), tardir).unwrap_or_default();
+        registry.touch(&index);
+        serving.push(Serving {
+            index,
+            prefix: String::new(),
+            base,
+        });
+    }
+    Ok(serving)
+}
+
+/// Tardir-relative view of a Root-relative index path.
+fn tardir_relative<'a>(rel: &'a str, entry: &Serving) -> Option<Cow<'a, str>> {
+    if entry.base.is_empty() {
+        return strip_prefix(rel, &entry.prefix).map(Cow::Borrowed);
+    }
+    (!rel.is_empty()).then(|| Cow::Owned(format!("{}/{}", entry.base, rel)))
+}
+
+fn depth_of(rel: &str) -> usize {
+    rel.matches('/').count()
 }
 
 struct Hit {
@@ -202,14 +278,15 @@ fn fuzzy_search(
         .zip(&result.scores)
         .filter_map(|(file, score)| {
             let rel = file.relative_path(picker);
-            let tardir_rel = strip_prefix(&rel, &entry.prefix)?;
+            let tardir_rel = tardir_relative(&rel, entry)?;
+            let depth = depth_of(&tardir_rel);
             Some(Hit {
                 key: absolute_key(picker, &rel),
                 path: absolute_path(picker, &rel),
-                rel: tardir_rel.to_string(),
+                rel: tardir_rel.into_owned(),
                 score: score.total,
                 tier: None,
-                depth: tardir_rel.matches('/').count(),
+                depth,
             })
         })
         .collect();
@@ -222,7 +299,6 @@ struct Candidate {
     parent_miss: bool,
     depth: usize,
     frecency: i32,
-    rel: String,
     tardir_rel: String,
     index: usize,
 }
@@ -232,7 +308,7 @@ impl Ord for Candidate {
         (self.tier, self.case_miss, self.parent_miss, self.depth)
             .cmp(&(other.tier, other.case_miss, other.parent_miss, other.depth))
             .then(Reverse(self.frecency).cmp(&Reverse(other.frecency)))
-            .then_with(|| self.rel.cmp(&other.rel))
+            .then_with(|| self.tardir_rel.cmp(&other.tardir_rel))
     }
 }
 
@@ -296,7 +372,7 @@ fn literal_search(
             continue;
         }
         let rel = file.relative_path(picker);
-        let Some(tardir_rel) = strip_prefix(&rel, &entry.prefix).map(str::to_string) else {
+        let Some(tardir_rel) = tardir_relative(&rel, entry) else {
             continue;
         };
         if regex
@@ -318,10 +394,9 @@ fn literal_search(
             tier,
             case_miss,
             parent_miss,
-            depth: tardir_rel.matches('/').count(),
+            depth: depth_of(&tardir_rel),
             frecency: file.total_frecency_score(),
-            rel,
-            tardir_rel,
+            tardir_rel: tardir_rel.into_owned(),
             index,
         };
         if best.len() < capacity {

@@ -102,6 +102,36 @@ impl Registry {
         Ok(index)
     }
 
+    /// Drop every Index whose Root lies strictly below a finished scan.
+    /// Removal drops registry references only; requests hold their own Arcs.
+    pub(crate) fn subsume_finished(&self) {
+        let indexes = self.indices();
+        let finished: Vec<String> = indexes
+            .iter()
+            .filter(|index| !index.progress().scanning)
+            .map(|index| index.key().to_string())
+            .collect();
+        if finished.is_empty() {
+            return;
+        }
+
+        let mut roots = self.roots.write();
+        let before = roots.len();
+        roots.retain(|index| {
+            !finished.iter().any(|key| {
+                index.key().len() > key.len()
+                    && index.key().starts_with(key.as_str())
+                    && index.key().as_bytes()[key.len()] == b'/'
+            })
+        });
+        if roots.len() != before {
+            tracing::info!(
+                dropped = before - roots.len(),
+                "parent scan subsumed child indexes"
+            );
+        }
+    }
+
     fn find(&self, key: &str) -> Option<Arc<Index>> {
         self.roots
             .read()

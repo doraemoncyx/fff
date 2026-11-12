@@ -1,12 +1,15 @@
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use axum::Router;
 use tokio::sync::watch;
 
 use crate::config::Config;
 use crate::registry::Registry;
+
+const SUBSUME_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Handle to a running server: bound address plus a shutdown switch.
 pub struct RunningServer {
@@ -93,6 +96,7 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     };
 
     let app: Router = crate::api::router(registry.clone());
+    tokio::spawn(subsumption_tick(registry.clone(), shutdown.subscribe()));
     let signal = {
         let mut receiver = shutdown.subscribe();
         async move {
@@ -120,4 +124,15 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     }
 
     registry.shutdown();
+}
+
+/// Scans finish on their own schedule; this lets subsumption happen without
+/// waiting for the next request to arrive.
+async fn subsumption_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(SUBSUME_INTERVAL) => registry.subsume_finished(),
+            _ = stop.changed() => return,
+        }
+    }
 }

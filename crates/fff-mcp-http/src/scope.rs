@@ -22,6 +22,12 @@ pub(crate) fn patterns(
     let mut roots: Vec<(String, bool)> = Vec::new();
     let mut includes = Vec::new();
 
+    // A covering Index answers for the tardir subtree only: `{rel, rel/**}`.
+    if !prefix.is_empty() {
+        let escaped = escape_glob(prefix);
+        result.push((format!("{{{escaped},{escaped}/**}}"), false));
+    }
+
     if let Some(spec) = input.path {
         match spec {
             PathSpec::Prefix(rel) if !rel.is_empty() => {
