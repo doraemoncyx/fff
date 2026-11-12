@@ -6,6 +6,10 @@ use crate::registry::Registry;
 pub struct StatsResponse {
     pub used_bytes: u64,
     pub budget_bytes: u64,
+    /// Initial scans this process started, and the concurrency they reached.
+    pub scans_started: u64,
+    pub scans_in_flight: usize,
+    pub peak_scans_in_flight: usize,
     pub indexes: Vec<IndexStats>,
 }
 
@@ -40,6 +44,9 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
     StatsResponse {
         used_bytes: registry.used_bytes(),
         budget_bytes: registry.config().max_memory_bytes,
+        scans_started: registry.scans_started(),
+        scans_in_flight: registry.scans_in_flight(),
+        peak_scans_in_flight: registry.peak_scans_in_flight(),
         indexes,
     }
 }

@@ -43,10 +43,19 @@ pub(crate) struct Serving {
     pub base: String,
 }
 
+/// The Indexes answering one request, plus whether its own Root is still unindexed.
+pub(crate) struct ServingPlan {
+    pub entries: Vec<Serving>,
+    /// True when this tardir needs an Index that could not start in time.
+    pub pending: bool,
+}
+
 pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResponse, ApiError> {
     let offset = resolve_offset(registry, params);
     let query = Query::normalize(params, offset)?;
-    let serving = serving_set(registry, &query.tardir)?;
+    let deadline = Instant::now() + registry.config().scan_wait;
+    let plan = serving_set(registry, &query.tardir, deadline)?;
+    let serving = plan.entries;
     let serving_indexes: Vec<Arc<Index>> =
         serving.iter().map(|entry| entry.index.clone()).collect();
 
@@ -57,7 +66,8 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
         registry.touch(index);
     }
 
-    let deadline = Instant::now() + registry.config().scan_wait;
+    // One deadline for the whole set: a still-scanning Index never costs the
+    // others their already-available results.
     for entry in &serving {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -74,7 +84,7 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
     let mut hits = Vec::new();
     let mut total = 0usize;
     let mut scanned = 0usize;
-    let mut scanning = false;
+    let mut scanning = plan.pending;
     let mut served_by = Vec::new();
 
     for entry in &serving {
@@ -142,7 +152,11 @@ fn resolve_offset(registry: &Registry, params: &Params) -> usize {
 /// Root is strictly below it. Scope is evaluated per Root, so an Index below
 /// the tardir answers with its own top matches — that merge only exists while
 /// the parent is scan-in-progress.
-fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiError> {
+fn serving_set(
+    registry: &Registry,
+    tardir: &Path,
+    deadline: Instant,
+) -> Result<ServingPlan, ApiError> {
     let registered = registry.indices();
     let covering = registered
         .iter()
@@ -150,6 +164,7 @@ fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiEr
         .max_by_key(|index| index.key().len())
         .cloned();
 
+    let mut pending = false;
     let mut serving = Vec::new();
     match covering {
         Some(index) => {
@@ -166,14 +181,14 @@ fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiEr
                 base: String::new(),
             });
         }
-        None => {
-            let index = registry.ensure_index(tardir)?;
-            serving.push(Serving {
+        None => match registry.ensure_index(tardir, deadline)? {
+            Some(index) => serving.push(Serving {
                 index,
                 prefix: String::new(),
                 base: String::new(),
-            });
-        }
+            }),
+            None => pending = true,
+        },
     }
 
     let mut below: Vec<Arc<Index>> = registered
@@ -189,7 +204,10 @@ fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiEr
             base,
         });
     }
-    Ok(serving)
+    Ok(ServingPlan {
+        entries: serving,
+        pending,
+    })
 }
 
 /// Tardir-relative view of a Root-relative index path.

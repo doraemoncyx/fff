@@ -9,6 +9,7 @@ mod memory;
 mod params;
 mod registry;
 mod root;
+mod scan_gate;
 mod scope;
 mod search;
 mod server;

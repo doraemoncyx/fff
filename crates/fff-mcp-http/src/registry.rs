@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-use fff::{FilePickerIgnoreOptions, SharedFrecency};
+use fff::{FilePickerIgnoreOptions, SharedFilePicker, SharedFrecency};
 use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
@@ -12,6 +13,7 @@ use crate::error::ApiError;
 use crate::index::Index;
 use crate::memory::{MemoryProbe, OsMemoryProbe, collect_allocator};
 use crate::params::Params;
+use crate::scan_gate::{ScanGate, ScanPermit, ScanSlot, SlotWait};
 use crate::search::{self, SearchResponse};
 use crate::stats::StatsResponse;
 
@@ -21,6 +23,9 @@ const EVICT_COOLDOWN_MS: u64 = 30_000;
 /// Root -> Index registry shared by every request.
 pub struct Registry {
     roots: RwLock<Vec<Arc<Index>>>,
+    /// Roots whose first Index is being created, so callers join one scan.
+    creating: Mutex<HashMap<String, Arc<ScanSlot>>>,
+    scans: Arc<ScanGate>,
     tick: AtomicU64,
     config: Arc<Config>,
     frecency: SharedFrecency,
@@ -63,6 +68,8 @@ impl Registry {
 
         Ok(Self {
             roots: RwLock::new(Vec::new()),
+            creating: Mutex::new(HashMap::new()),
+            scans: ScanGate::new(config.max_concurrent_scans),
             tick: AtomicU64::new(0),
             config: Arc::new(config),
             frecency,
@@ -85,6 +92,18 @@ impl Registry {
         self.cursors.lock().get(id)
     }
 
+    pub(crate) fn scans_started(&self) -> u64 {
+        self.scans.started()
+    }
+
+    pub(crate) fn scans_in_flight(&self) -> usize {
+        self.scans.in_flight()
+    }
+
+    pub(crate) fn peak_scans_in_flight(&self) -> usize {
+        self.scans.peak()
+    }
+
     pub(crate) fn store_cursor(&self, offset: usize) -> String {
         self.cursors.lock().store(offset)
     }
@@ -101,30 +120,100 @@ impl Registry {
         self.roots.read().clone()
     }
 
-    /// Find the index for exactly this Root, creating and scanning it if missing.
-    pub(crate) fn ensure_index(&self, tardir: &Path) -> Result<Arc<Index>, ApiError> {
+    /// Find the index for exactly this Root; create it once, however many
+    /// requests arrive at the same time. `None` means the request gave up
+    /// queueing for a scan permit before its deadline.
+    pub(crate) fn ensure_index(
+        &self,
+        tardir: &Path,
+        deadline: Instant,
+    ) -> Result<Option<Arc<Index>>, ApiError> {
         let key = crate::root::root_key(tardir);
-        if let Some(index) = self.find(&key) {
-            self.touch(&index);
-            return Ok(index);
-        }
+        loop {
+            if let Some(index) = self.find(&key) {
+                self.touch(&index);
+                return Ok(Some(index));
+            }
 
-        let mut roots = self.roots.write();
-        if let Some(index) = roots.iter().find(|index| index.key() == key) {
-            index.touch(self.next_tick());
-            return Ok(index.clone());
+            let (slot, creator) = {
+                let mut creating = self.creating.lock();
+                match creating.get(&key) {
+                    Some(slot) => (Arc::clone(slot), false),
+                    None => {
+                        // A creator publishes into `roots` before it leaves
+                        // this map, so an empty entry here has a visible Index.
+                        if let Some(index) = self.find(&key) {
+                            self.touch(&index);
+                            return Ok(Some(index));
+                        }
+                        let slot = ScanSlot::new();
+                        creating.insert(key.clone(), Arc::clone(&slot));
+                        (slot, true)
+                    }
+                }
+            };
+
+            if creator {
+                return self.create_and_publish(tardir, &key, &slot, deadline);
+            }
+
+            match slot.wait(deadline) {
+                SlotWait::Ready(index) => {
+                    self.touch(&index);
+                    return Ok(Some(index));
+                }
+                SlotWait::Failed(message) => return Err(ApiError::invalid_params(message)),
+                SlotWait::Abandoned => continue,
+                SlotWait::TimedOut => return Ok(None),
+            }
         }
+    }
+
+    fn create_and_publish(
+        &self,
+        tardir: &Path,
+        key: &str,
+        slot: &Arc<ScanSlot>,
+        deadline: Instant,
+    ) -> Result<Option<Arc<Index>>, ApiError> {
+        let Some(permit) = self.scans.acquire_until(deadline) else {
+            // Queued past the deadline: leave the Root unindexed and let the
+            // caller answer from partial results; the next request retries.
+            tracing::info!(root = %tardir.display(), "scan queue full, request timed out");
+            self.forget_slot(key, slot);
+            slot.abandon();
+            return Ok(None);
+        };
 
         tracing::info!(root = %tardir.display(), "creating index");
-        let index = Arc::new(Index::create(
-            tardir,
-            &self.config,
-            &self.frecency,
-            &self.ignore,
-        )?);
-        index.touch(self.next_tick());
-        roots.push(index.clone());
-        Ok(index)
+        let index = match Index::create(tardir, &self.config, &self.frecency, &self.ignore) {
+            Ok(index) => Arc::new(index),
+            Err(error) => {
+                drop(permit);
+                slot.fail(error.message().to_string());
+                self.forget_slot(key, slot);
+                return Err(error);
+            }
+        };
+
+        self.roots.write().push(Arc::clone(&index));
+        self.scans.record_started();
+        release_when_scanned(index.picker().clone(), permit);
+        self.touch(&index);
+        slot.publish(Arc::clone(&index));
+        self.forget_slot(key, slot);
+        Ok(Some(index))
+    }
+
+    /// Drop the map entry only while it still points at `slot`.
+    fn forget_slot(&self, key: &str, slot: &Arc<ScanSlot>) {
+        let mut creating = self.creating.lock();
+        if creating
+            .get(key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, slot))
+        {
+            creating.remove(key);
+        }
     }
 
     /// Drop every Index whose Root lies strictly below a finished scan.
@@ -298,4 +387,18 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Hold the permit until the initial walk finishes, then let the next scan in.
+fn release_when_scanned(picker: SharedFilePicker, permit: ScanPermit) {
+    let spawned = std::thread::Builder::new()
+        .name("fff-scan-permit".into())
+        .spawn(move || {
+            while !picker.wait_for_scan(Duration::from_millis(250)) {}
+            drop(permit);
+        });
+    if let Err(error) = spawned {
+        // Without the watcher the permit is dropped here instead.
+        tracing::warn!(?error, "scan permit watcher failed to spawn");
+    }
 }
