@@ -220,7 +220,7 @@ fn under_prefix(path: &str, prefix: &str) -> bool {
             .is_some_and(|r| r.starts_with('/'))
 }
 
-fn alternatives(patterns: &[String]) -> String {
+pub(crate) fn alternatives(patterns: &[String]) -> String {
     if patterns.len() == 1 {
         patterns[0].clone()
     } else {
@@ -229,7 +229,7 @@ fn alternatives(patterns: &[String]) -> String {
 }
 
 // True when a pattern spells out the hidden directory's own name, like `.github/**`.
-fn names_hidden_dir(pattern: &str, dir: &str) -> bool {
+pub(crate) fn names_hidden_dir(pattern: &str, dir: &str) -> bool {
     fn walk(pattern: &[&str], dir: &[&str]) -> bool {
         let (Some((&part, rest)), Some(&name)) = (pattern.split_first(), dir.first()) else {
             return false;
@@ -253,7 +253,7 @@ fn names_hidden_dir(pattern: &str, dir: &str) -> bool {
 }
 
 // True when hidden `dir` holds the root, read from the root or, if nested, at any depth.
-fn enters_root(root: &str, nested: bool, dir: &str) -> bool {
+pub(crate) fn enters_root(root: &str, nested: bool, dir: &str) -> bool {
     let parts: Vec<&str> = root.split('/').collect();
     Path::new(root).starts_with(dir)
         || nested

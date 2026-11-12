@@ -8,7 +8,7 @@ use fff::{FilePickerIgnoreOptions, SharedFilePicker, SharedFrecency};
 use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
-use crate::cursor::CursorStore;
+use crate::cursor::{CursorStore, GrepCursor};
 use crate::error::ApiError;
 use crate::index::Index;
 use crate::memory::{MemoryProbe, OsMemoryProbe, collect_allocator};
@@ -91,6 +91,15 @@ impl Registry {
 
     pub fn cursor_offset(&self, id: &str) -> Option<usize> {
         self.cursors.lock().get(id)
+    }
+
+    pub(crate) fn grep_cursor(&self, root: &str, id: &str) -> Option<GrepCursor> {
+        self.cursors.lock().get_grep(root, id)
+    }
+
+    // Run one grep formatting step against the shared cursor store.
+    pub(crate) fn with_cursors<T>(&self, f: impl FnOnce(&mut CursorStore) -> T) -> T {
+        f(&mut self.cursors.lock())
     }
 
     pub(crate) fn scans_started(&self) -> u64 {

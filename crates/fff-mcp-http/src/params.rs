@@ -69,37 +69,48 @@ impl Params {
     pub fn from_pairs<'a>(
         pairs: impl Iterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
     ) -> Result<Self, ApiError> {
-        let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
-        for (key, value) in pairs {
-            match grouped.iter_mut().find(|(name, _)| *name == key) {
-                Some((_, values)) => values.push(value.into_owned()),
-                None => grouped.push((key.into_owned(), vec![value.into_owned()])),
-            }
-        }
-
-        let mut object = serde_json::Map::new();
-        for (key, mut values) in grouped {
-            let value = match key.as_str() {
-                "hidden" => parse_bool(&values[0])?.map(serde_json::Value::Bool),
-                "maxResults" | "offset" => {
-                    values.first().map(|v| serde_json::Value::String(v.clone()))
-                }
-                _ if values.len() == 1 => Some(serde_json::Value::String(values.remove(0))),
-                _ => Some(serde_json::Value::Array(
-                    values
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect::<Vec<_>>(),
-                )),
-            };
-            if let Some(value) = value {
-                object.insert(key, value);
-            }
-        }
-
+        let object = pairs_object(pairs, &["maxResults", "offset"], &["hidden"])?;
         serde_json::from_value(serde_json::Value::Object(object))
             .map_err(|e| ApiError::invalid_params(format!("invalid parameters: {e}")))
     }
+}
+
+// Query-string pairs → JSON object. Repeated keys become an array, unless the
+// key is listed as numeric (first value only) or boolean (parsed here).
+pub(crate) fn pairs_object<'a>(
+    pairs: impl Iterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
+    numbers: &[&str],
+    booleans: &[&str],
+) -> Result<serde_json::Map<String, serde_json::Value>, ApiError> {
+    let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
+    for (key, value) in pairs {
+        match grouped.iter_mut().find(|(name, _)| *name == key) {
+            Some((_, values)) => values.push(value.into_owned()),
+            None => grouped.push((key.into_owned(), vec![value.into_owned()])),
+        }
+    }
+
+    let mut object = serde_json::Map::new();
+    for (key, mut values) in grouped {
+        let value = if booleans.contains(&key.as_str()) {
+            parse_bool(&values[0])?.map(serde_json::Value::Bool)
+        } else if numbers.contains(&key.as_str()) {
+            values.first().map(|v| serde_json::Value::String(v.clone()))
+        } else if values.len() == 1 {
+            Some(serde_json::Value::String(values.remove(0)))
+        } else {
+            Some(serde_json::Value::Array(
+                values
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        if let Some(value) = value {
+            object.insert(key, value);
+        }
+    }
+    Ok(object)
 }
 
 fn parse_bool(raw: &str) -> Result<Option<bool>, ApiError> {
@@ -191,7 +202,7 @@ fn resolve_path(raw: &str, tardir: &Path) -> Result<PathSpec, ApiError> {
 }
 
 // Normalize a tardir-relative path to `/`-separated text, rejecting escapes.
-fn resolve_relative(raw: &str, tardir: &Path) -> Result<String, ApiError> {
+pub(crate) fn resolve_relative(raw: &str, tardir: &Path) -> Result<String, ApiError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(String::new());
@@ -291,7 +302,9 @@ where
     deserializer.deserialize_any(StringsVisitor)
 }
 
-fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_optional_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -337,14 +350,14 @@ where
     deserializer.deserialize_any(OptionalStringVisitor)
 }
 
-fn deserialize_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(crate) fn deserialize_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Ok(deserialize_optional_string(deserializer)?.unwrap_or_default())
 }
 
-fn deserialize_optional_number<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+pub(crate) fn deserialize_optional_number<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 
+use crate::grep_params::{GrepParams, MultiGrepParams};
 use crate::params::Params;
 use crate::registry::Registry;
 
-const INSTRUCTIONS: &str = "Find indexed files by path fragment, glob, or regex. Every call names a tardir: \
-the server indexes it on demand, keeps indexes for parent and child directories and merges their results. \
-Results carry absolute paths and paths relative to tardir.";
+const INSTRUCTIONS: &str = "Find indexed files by path fragment, glob, or regex, and search file contents with grep or multi_grep. \
+Every call names a tardir (absolute directory): the server indexes it on demand, keeps indexes for parent and child directories \
+and merges their results for find_files. grep and multi_grep run on one Index covering the tardir, so their results are content \
+matches with one-based line numbers, never JSON. \
+Results carry absolute paths and paths relative to tardir. Content search has no index of file contents: the first call on a new \
+tardir waits for the scan, and a still-scanning Index answers with a partial result that says so.";
 
-// Stateless MCP surface exposing the same `find_files` tool as `fff-mcp`.
+// Stateless MCP surface exposing the same tools as `fff-mcp`.
 #[derive(Clone)]
 pub struct FindFilesServer {
     registry: Arc<Registry>,
@@ -42,6 +46,40 @@ impl FindFilesServer {
         let value = serde_json::to_value(&response)
             .map_err(|e| ErrorData::internal_error(format!("serialize response: {e}"), None))?;
         Ok(CallToolResult::structured(value))
+    }
+
+    #[tool(
+        name = "grep",
+        description = "Search source code with line numbers and surrounding context. For content questions, search directly with a module scope in path. Returned source verifies locations when it contains the required evidence.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    fn grep(
+        &self,
+        Parameters(params): Parameters<GrepParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = crate::grep::grep(&self.registry, params).map_err(to_error_data)?;
+        Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    #[tool(
+        name = "multi_grep",
+        description = "Search for any of several literal identifiers in one call. Set constraints to the directory, module, filename, or glob from the request. Set definitions_only=true for declarations. Results contain source lines and line numbers.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    fn multi_grep(
+        &self,
+        Parameters(params): Parameters<MultiGrepParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = crate::grep::multi_grep(&self.registry, params).map_err(to_error_data)?;
+        Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 }
 

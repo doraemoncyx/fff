@@ -104,11 +104,15 @@ impl TestServer {
     }
 
     pub fn mcp_call(&self, id: u64, arguments: serde_json::Value) -> serde_json::Value {
+        self.mcp_tool(id, "find_files", arguments)
+    }
+
+    pub fn mcp_tool(&self, id: u64, name: &str, arguments: serde_json::Value) -> serde_json::Value {
         self.mcp(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
-            "params": { "name": "find_files", "arguments": arguments }
+            "params": { "name": name, "arguments": arguments }
         }))
     }
 

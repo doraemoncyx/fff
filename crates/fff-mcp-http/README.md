@@ -19,13 +19,15 @@ re-indexing what is already known.
 | route | purpose |
 | --- | --- |
 | `GET /search?querystr=…&tardir=…` | same JSON as the MCP tool, for scripts and curl |
+| `GET /grep?query=…&tardir=…` | content search, returns `{"text", "scanning", "scanned"}` |
+| `GET /multi_grep?patterns=a&patterns=b&tardir=…` | OR content search over several literals |
 | `POST /mcp` | Streamable HTTP MCP, stateless, JSON responses (no SSE) |
 | `GET /stats` | global memory, budget, and one entry per Index in LRU order |
 | `GET /healthz` | liveness probe; never authenticated |
 
 `/search` and the `find_files` MCP tool accept identical parameters, so a
 client switching between the stdio `fff-mcp` server and this one only changes
-its URL.
+its URL. The same holds for `grep` and `multi_grep`.
 
 ```json
 {
@@ -55,6 +57,43 @@ excludes), `hidden` (default `true`), `mode` (`fuzzy` default, `glob`,
 `regex`), `filters` (regex AND), `maxResults` (default 20, clamped to
 1..=10000), `cursor`. `path` and `paths` are relative to `tardir`; absolute
 paths must stay inside it and `..` is rejected.
+
+## Content search
+
+The `grep` and `multi_grep` MCP tools and the `GET /grep` / `GET /multi_grep`
+routes search file contents. Both tools require `tardir`, exactly like
+`find_files`.
+
+`grep` takes `query` (alias `pattern`; a JSON array is joined with spaces) plus
+`path`, `paths`, `globs`, `hidden`, `mode` (`auto` default, `regex`,
+`literal`), `case` (`smart`, `sensitive`, `insensitive`), `maxResults`
+(default 100, or 30 with `definitions_only`, clamped to 200), `cursor`,
+`output_mode` (`content` default, `files_with_matches`, `count`), `context`,
+`before_context`, `after_context`, `max_matches_per_file` and
+`definitions_only`.
+
+`multi_grep` takes `patterns` (a string or an array; OR logic), `constraints`
+(a `rg`-shaped path/module/glob string), `maxResults` (default 20), `cursor`,
+`output_mode`, `context` and `definitions_only`.
+
+Results are text, not JSON, and byte-for-byte the same shape as the stdio
+`fff-mcp` server: a file header line, one-based ` line: text` matches, `-` for
+context rows, the `0 matches.` / definitions-fallback sentences, and an opaque
+`cursor: <id>` footer while another page exists. The routes wrap that text in
+`{"text": "...", "scanning": false, "scanned": 204311}`.
+
+Content search runs against **one** Index — the deepest one whose Root covers
+the tardir — because paging needs one coherent file list, so Roots are never
+merged for grep. A tardir inside a Root is restricted to its own subtree, so a
+sibling directory never leaks into the results. When no Index covers the
+tardir one is created and the request waits for the initial walk; if
+`--scan-wait-secs` expires first, the matches come from the files indexed so
+far and the text starts with a note that the result is partial. `scanning:
+true` in the route response says the same thing.
+
+Cursors are Root-scoped: reusing a `grep` cursor under a different Root (or a
+different tardir that resolves to a different Root) starts from the first page
+instead of paging someone else's file list.
 
 ## How directory switching behaves
 
@@ -150,8 +189,11 @@ own `<stem>+<timestamp>+<pid>.log` under `%LOCALAPPDATA%\fff\` (or
   ranks against each Root's own base path, and rescoring by tardir-relative
   path is not exposed. This only affects path-shape queries during the window
   where a parent is still scanning.
-- No content search (`grep`/`multi_grep`); content indexing is off because this
-  service is memory-bound.
+- Content search has no bigram prefilter: `grep` and `multi_grep` always read
+  the files themselves, so latency grows with the size of the tree, and the
+  first call on a new tardir waits for the scan (or answers partially after
+  `--scan-wait-secs`). Content indexing stays off because this service is
+  memory-bound.
 - No index persistence: a restart rescans.
 
 ## Building

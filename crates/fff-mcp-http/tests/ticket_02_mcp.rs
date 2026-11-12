@@ -61,10 +61,18 @@ fn initialize_then_list_then_call_roundtrip() {
         "params": {}
     }));
     let tools = listing["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1, "{listing}");
-    assert_eq!(tools[0]["name"], "find_files");
+    assert_eq!(tools.len(), 3, "{listing}");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["find_files", "grep", "multi_grep"], "{listing}");
+    let find_files = tools
+        .iter()
+        .find(|tool| tool["name"] == "find_files")
+        .expect("find_files is listed");
 
-    let schema = &tools[0]["inputSchema"];
+    let schema = &find_files["inputSchema"];
     let required: Vec<&str> = schema["required"]
         .as_array()
         .unwrap()

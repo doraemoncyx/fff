@@ -11,6 +11,8 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use serde_json::json;
 
 use crate::error::ApiError;
+use crate::grep::GrepText;
+use crate::grep_params::{GrepParams, MultiGrepParams};
 use crate::mcp::FindFilesServer;
 use crate::params::Params;
 use crate::registry::Registry;
@@ -37,6 +39,8 @@ pub(crate) fn router(registry: Arc<Registry>) -> Router {
     // /healthz stays outside the token gate; everything else needs it when set.
     let mut protected = Router::new()
         .route("/search", get(search))
+        .route("/grep", get(grep))
+        .route("/multi_grep", get(multi_grep))
         .route("/stats", get(stats))
         .route_service("/mcp", mcp);
     if config.test_hook {
@@ -76,6 +80,30 @@ async fn search(
 async fn stats(State(registry): State<Arc<Registry>>) -> Json<StatsResponse> {
     registry.mark_activity();
     Json(registry.stats())
+}
+
+async fn grep(
+    State(registry): State<Arc<Registry>>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<GrepText>, ApiError> {
+    let raw = raw.unwrap_or_default();
+    let params = GrepParams::from_pairs(form_urlencoded::parse(raw.as_bytes()))?;
+    let response = tokio::task::spawn_blocking(move || crate::grep::grep(&registry, params))
+        .await
+        .map_err(|error| ApiError::internal(format!("grep task failed: {error}")))??;
+    Ok(Json(response))
+}
+
+async fn multi_grep(
+    State(registry): State<Arc<Registry>>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<GrepText>, ApiError> {
+    let raw = raw.unwrap_or_default();
+    let params = MultiGrepParams::from_pairs(form_urlencoded::parse(raw.as_bytes()))?;
+    let response = tokio::task::spawn_blocking(move || crate::grep::multi_grep(&registry, params))
+        .await
+        .map_err(|error| ApiError::internal(format!("grep task failed: {error}")))??;
+    Ok(Json(response))
 }
 
 // Test hook: run one eviction round outside any request.
