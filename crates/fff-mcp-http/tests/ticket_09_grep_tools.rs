@@ -513,6 +513,12 @@ fn http_routes_answer_with_text_and_honour_the_token() {
     assert!(body["scanning"].is_boolean(), "{body}");
     assert!(body["scanned"].as_u64().unwrap() > 0, "{body}");
 
+    // `querystr` is the name /search uses; accept it on /grep too.
+    let alias = [("querystr", "needle_alpha"), ("tardir", tardir.as_str())];
+    let response = open.get(&format!("/grep?{}", common::encode(&alias)));
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(response.body.contains("needle_alpha"), "{}", response.body);
+
     let response = open.get(&format!("/multi_grep?{}", common::encode(&patterns)));
     assert_eq!(response.status, 200, "{}", response.body);
     let body: Value = serde_json::from_str(&response.body).unwrap();

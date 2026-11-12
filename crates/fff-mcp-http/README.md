@@ -64,7 +64,8 @@ The `grep` and `multi_grep` MCP tools and the `GET /grep` / `GET /multi_grep`
 routes search file contents. Both tools require `tardir`, exactly like
 `find_files`.
 
-`grep` takes `query` (alias `pattern`; a JSON array is joined with spaces) plus
+`grep` takes `query` (aliases `pattern` and `querystr`, so the curl name is
+the same as `/search`; a JSON array is joined with spaces) plus
 `path`, `paths`, `globs`, `hidden`, `mode` (`auto` default, `regex`,
 `literal`), `case` (`smart`, `sensitive`, `insensitive`), `maxResults`
 (default 100, or 30 with `definitions_only`, clamped to 200), `cursor`,
