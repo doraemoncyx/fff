@@ -1,0 +1,145 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use fff::{FilePickerIgnoreOptions, SharedFrecency};
+use parking_lot::{Mutex, RwLock};
+
+use crate::config::Config;
+use crate::cursor::CursorStore;
+use crate::error::ApiError;
+use crate::index::Index;
+use crate::params::Params;
+use crate::search::{self, SearchResponse};
+use crate::stats::StatsResponse;
+
+/// Root -> Index registry shared by every request.
+pub struct Registry {
+    roots: RwLock<Vec<Arc<Index>>>,
+    tick: AtomicU64,
+    config: Arc<Config>,
+    frecency: SharedFrecency,
+    ignore: FilePickerIgnoreOptions,
+    cursors: Mutex<CursorStore>,
+    last_activity: AtomicU64,
+}
+
+impl Registry {
+    pub fn new(config: Config) -> Result<Self, ApiError> {
+        let frecency = SharedFrecency::default();
+        if let Some(path) = &config.frecency_db {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match fff::FrecencyTracker::open(path) {
+                Ok(tracker) => {
+                    let _ = frecency.init(tracker);
+                }
+                Err(error) => {
+                    tracing::warn!(?error, path = %path.display(), "frecency disabled");
+                }
+            }
+        }
+
+        Ok(Self {
+            roots: RwLock::new(Vec::new()),
+            tick: AtomicU64::new(0),
+            config: Arc::new(config),
+            frecency,
+            ignore: FilePickerIgnoreOptions::default(),
+            cursors: Mutex::new(CursorStore::new()),
+            last_activity: AtomicU64::new(now_millis()),
+        })
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn cursor_offset(&self, id: &str) -> Option<usize> {
+        self.cursors.lock().get(id)
+    }
+
+    pub(crate) fn store_cursor(&self, offset: usize) -> String {
+        self.cursors.lock().store(offset)
+    }
+
+    pub(crate) fn next_tick(&self) -> u64 {
+        self.tick.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(crate) fn touch(&self, index: &Index) {
+        index.touch(self.next_tick());
+    }
+
+    pub(crate) fn indices(&self) -> Vec<Arc<Index>> {
+        self.roots.read().clone()
+    }
+
+    /// Find the index for exactly this Root, creating and scanning it if missing.
+    pub(crate) fn ensure_index(&self, tardir: &Path) -> Result<Arc<Index>, ApiError> {
+        let key = crate::root::root_key(tardir);
+        if let Some(index) = self.find(&key) {
+            self.touch(&index);
+            return Ok(index);
+        }
+
+        let mut roots = self.roots.write();
+        if let Some(index) = roots.iter().find(|index| index.key() == key) {
+            index.touch(self.next_tick());
+            return Ok(index.clone());
+        }
+
+        tracing::info!(root = %tardir.display(), "creating index");
+        let index = Arc::new(Index::create(
+            tardir,
+            &self.config,
+            &self.frecency,
+            &self.ignore,
+        )?);
+        index.touch(self.next_tick());
+        roots.push(index.clone());
+        Ok(index)
+    }
+
+    fn find(&self, key: &str) -> Option<Arc<Index>> {
+        self.roots
+            .read()
+            .iter()
+            .find(|index| index.key() == key)
+            .cloned()
+    }
+
+    pub fn query(&self, params: &Params) -> Result<SearchResponse, ApiError> {
+        self.mark_activity();
+        search::execute(self, params)
+    }
+
+    pub fn stats(&self) -> StatsResponse {
+        crate::stats::snapshot(self)
+    }
+
+    pub fn shutdown(&self) {
+        let indexes = self.indices();
+        for index in &indexes {
+            index.stop();
+        }
+        self.roots.write().clear();
+    }
+
+    pub(crate) fn mark_activity(&self) {
+        self.last_activity.store(now_millis(), Ordering::Relaxed);
+    }
+
+    pub fn idle_for(&self) -> std::time::Duration {
+        let last = self.last_activity.load(Ordering::Relaxed);
+        std::time::Duration::from_millis(now_millis().saturating_sub(last))
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}

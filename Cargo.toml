@@ -3,6 +3,7 @@ members = [
   "crates/fff-c",
   "crates/fff-core",
   "crates/fff-mcp",
+  "crates/fff-mcp-http",
   "crates/fff-nvim",
   "crates/fff-python",
   "crates/fff-query-parser",

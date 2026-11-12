@@ -1,0 +1,43 @@
+use std::sync::Arc;
+
+use axum::extract::{RawQuery, State};
+use axum::routing::get;
+use axum::{Json, Router};
+use serde_json::json;
+
+use crate::error::ApiError;
+use crate::params::Params;
+use crate::registry::Registry;
+use crate::search::SearchResponse;
+use crate::stats::StatsResponse;
+
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("FFF_GIT_HASH"), ")");
+
+pub(crate) fn router(registry: Arc<Registry>) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/search", get(search))
+        .route("/stats", get(stats))
+        .with_state(registry)
+}
+
+async fn healthz() -> Json<serde_json::Value> {
+    Json(json!({ "status": "ok", "version": VERSION }))
+}
+
+async fn search(
+    State(registry): State<Arc<Registry>>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<SearchResponse>, ApiError> {
+    let raw = raw.unwrap_or_default();
+    let params = Params::from_pairs(form_urlencoded::parse(raw.as_bytes()))?;
+    let response = tokio::task::spawn_blocking(move || registry.query(&params))
+        .await
+        .map_err(|error| ApiError::internal(format!("search task failed: {error}")))??;
+    Ok(Json(response))
+}
+
+async fn stats(State(registry): State<Arc<Registry>>) -> Json<StatsResponse> {
+    registry.mark_activity();
+    Json(registry.stats())
+}

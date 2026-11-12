@@ -1,0 +1,52 @@
+[package]
+name = "fff-mcp-http"
+version = "0.11.0"
+edition = "2024"
+description = "Multi-root HTTP file finder over the fff-search index, with an MCP endpoint"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+name = "fff_mcp_http"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fff-mcp-http"
+path = "src/main.rs"
+
+[features]
+# zlob is required for skip patterns; ripgrep exists only to prove the guard.
+default = ["zlob"]
+ripgrep = ["fff/ripgrep"]
+zlob = ["fff/zlob"]
+
+[dependencies]
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+dunce = { workspace = true }
+fff = { package = "fff-search", path = "../fff-core", default-features = false, version = "0.11.0", features = ["mimalloc-collect"] }
+form_urlencoded = "1"
+globset = { workspace = true }
+libmimalloc-sys = { version = "0.1", features = ["extended", "local_dynamic_tls"] }
+mimalloc = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+rmcp = { version = "1.7.0", features = ["server", "server-side-http", "transport-streamable-http-server"] }
+schemars = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+toml = "0.9"
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3.8"
