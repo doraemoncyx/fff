@@ -164,6 +164,15 @@ fn children_then_parent_merges_and_dedupes() {
 #[test]
 fn children_answer_while_the_parent_is_still_scanning() {
     let dir = tree();
+    // Keep the parent walk busy long enough that the children cannot already be
+    // subsumed by the time this response is assembled.
+    for index in 0..20_000 {
+        let path = dir.path().join("bulk").join(format!("f{index}.dat"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, "x").unwrap();
+    }
     let mut config = test_config();
     config.scan_wait = Duration::ZERO;
     let server = TestServer::start(config);

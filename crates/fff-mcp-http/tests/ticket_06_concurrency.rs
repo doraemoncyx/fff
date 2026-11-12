@@ -149,9 +149,16 @@ fn the_scan_cap_queues_extra_requests_instead_of_failing() {
     let stats = server.stats();
     assert_eq!(stats_roots(&server).len(), 6, "{stats}");
     assert_eq!(stats["scans_started"].as_u64(), Some(6), "{stats}");
-    assert_eq!(stats["scans_in_flight"].as_u64(), Some(0), "{stats}");
+    // Permit release trails the last published file by a scheduler hop.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut in_flight = stats["scans_in_flight"].as_u64().unwrap_or(1);
+    while in_flight != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+        in_flight = server.stats()["scans_in_flight"].as_u64().unwrap_or(1);
+    }
+    assert_eq!(in_flight, 0, "{stats}");
     assert!(
-        stats["peak_scans_in_flight"].as_u64().unwrap_or(0) <= 2,
+        server.stats()["peak_scans_in_flight"].as_u64().unwrap_or(0) <= 2,
         "the cap was exceeded: {stats}"
     );
 }

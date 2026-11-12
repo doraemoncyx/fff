@@ -25,6 +25,8 @@ pub struct Registry {
     roots: RwLock<Vec<Arc<Index>>>,
     /// Roots whose first Index is being created, so callers join one scan.
     creating: Mutex<HashMap<String, Arc<ScanSlot>>>,
+    /// Roots whose creation gave up its permit wait; retried by the housekeeping tick.
+    deferred: Mutex<HashMap<String, std::path::PathBuf>>,
     scans: Arc<ScanGate>,
     tick: AtomicU64,
     config: Arc<Config>,
@@ -69,6 +71,7 @@ impl Registry {
         Ok(Self {
             roots: RwLock::new(Vec::new()),
             creating: Mutex::new(HashMap::new()),
+            deferred: Mutex::new(HashMap::new()),
             scans: ScanGate::new(config.max_concurrent_scans),
             tick: AtomicU64::new(0),
             config: Arc::new(config),
@@ -177,11 +180,12 @@ impl Registry {
         deadline: Instant,
     ) -> Result<Option<Arc<Index>>, ApiError> {
         let Some(permit) = self.scans.acquire_until(deadline) else {
-            // Queued past the deadline: leave the Root unindexed and let the
-            // caller answer from partial results; the next request retries.
-            tracing::info!(root = %tardir.display(), "scan queue full, request timed out");
+            // The caller answers from partial results now; the Root still needs
+            // its first scan, so the tick retries once a permit frees up.
+            tracing::info!(root = %tardir.display(), "scan queue full, deferring root");
             self.forget_slot(key, slot);
             slot.abandon();
+            self.defer(tardir);
             return Ok(None);
         };
 
@@ -213,6 +217,27 @@ impl Registry {
             .is_some_and(|entry| Arc::ptr_eq(entry, slot))
         {
             creating.remove(key);
+        }
+    }
+
+    fn defer(&self, tardir: &Path) {
+        self.deferred
+            .lock()
+            .insert(crate::root::root_key(tardir), tardir.to_path_buf());
+    }
+
+    /// Start the scans that previously ran out of permit budget.
+    pub(crate) fn start_deferred_scans(&self) {
+        let pending: Vec<_> = self.deferred.lock().drain().map(|(_, path)| path).collect();
+        for tardir in pending {
+            let deadline = Instant::now() + self.config.scan_wait.max(Duration::from_secs(1));
+            match self.ensure_index(&tardir, deadline) {
+                Ok(Some(index)) => index.touch(self.next_tick()),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(root = %tardir.display(), %error, "deferred scan failed")
+                }
+            }
         }
     }
 

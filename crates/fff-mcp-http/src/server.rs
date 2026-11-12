@@ -216,6 +216,7 @@ async fn housekeeping_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bo
         let _ = tokio::task::spawn_blocking(move || {
             worker.subsume_finished();
             worker.evict_finished_scans();
+            worker.start_deferred_scans();
         })
         .await;
     }
