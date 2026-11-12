@@ -22,8 +22,14 @@ static TUNE_MIMALLOC: extern "C" fn() = fff::tune_mimalloc;
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    init_logging(&args);
-    let config: Config = args.into();
+    let config = match args.into_config() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    init_logging(&config);
 
     match spawn(config) {
         Ok(server) => {
@@ -32,19 +38,19 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("error: cannot bind: {error}");
+            eprintln!("error: cannot start: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn init_logging(args: &Args) {
-    let hint = args.log_file.clone().unwrap_or_else(default_log_file);
+fn init_logging(config: &Config) {
+    let hint = config.log_file.clone().unwrap_or_else(default_log_file);
     let Some(path) = hint.to_str() else {
         eprintln!("warning: log path is not valid UTF-8, file logging disabled");
         return;
     };
-    if let Err(error) = fff::log::init_tracing(path, args.log_level.as_deref(), None) {
+    if let Err(error) = fff::log::init_tracing(path, config.log_level.as_deref(), None) {
         eprintln!("warning: cannot start logging: {error}");
     }
 }

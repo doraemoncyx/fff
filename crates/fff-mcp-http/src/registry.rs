@@ -37,6 +37,15 @@ impl Registry {
     }
 
     pub fn with_probe(config: Config, probe: Arc<dyn MemoryProbe>) -> Result<Self, ApiError> {
+        let ignore = config.ignore_options().map_err(ApiError::invalid_params)?;
+        Self::with_probe_and_ignore(config, probe, ignore)
+    }
+
+    pub(crate) fn with_probe_and_ignore(
+        config: Config,
+        probe: Arc<dyn MemoryProbe>,
+        ignore: FilePickerIgnoreOptions,
+    ) -> Result<Self, ApiError> {
         let frecency = SharedFrecency::default();
         if let Some(path) = &config.frecency_db {
             if let Some(parent) = path.parent() {
@@ -57,7 +66,10 @@ impl Registry {
             tick: AtomicU64::new(0),
             config: Arc::new(config),
             frecency,
-            ignore: FilePickerIgnoreOptions::default(),
+            // Skip rules are captured once per Index at creation: changing them
+            // only affects new Roots, an existing Index keeps its snapshot
+            // until the process restarts.
+            ignore,
             cursors: Mutex::new(CursorStore::new()),
             last_activity: AtomicU64::new(now_millis()),
             probe,

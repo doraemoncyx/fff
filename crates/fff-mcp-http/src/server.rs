@@ -55,7 +55,15 @@ pub fn spawn_with_probe(
     config: Config,
     probe: Arc<dyn MemoryProbe>,
 ) -> std::io::Result<RunningServer> {
-    let listener = TcpListener::bind(SocketAddr::new(config.bind, config.port))?;
+    // Fail before binding a port when the walker cannot honour skip rules.
+    let ignore = config
+        .ignore_options()
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+
+    let address = SocketAddr::new(config.bind, config.port);
+    let listener = TcpListener::bind(address).map_err(|error| {
+        std::io::Error::new(error.kind(), format!("cannot bind {address}: {error}"))
+    })?;
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
     let (shutdown, _) = watch::channel(false);
@@ -77,7 +85,7 @@ pub fn spawn_with_probe(
             };
 
             runtime.block_on(async move {
-                let registry = match Registry::with_probe(config, probe) {
+                let registry = match Registry::with_probe_and_ignore(config, probe, ignore) {
                     Ok(registry) => Arc::new(registry),
                     Err(error) => {
                         tracing::error!(%error, "failed to start registry");
