@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use fff::{
@@ -16,6 +16,7 @@ pub(crate) struct Index {
     key: String,
     picker: SharedFilePicker,
     last_used: AtomicU64,
+    scan_announced: AtomicBool,
 }
 
 pub(crate) struct IndexProgress {
@@ -54,6 +55,7 @@ impl Index {
             key: crate::root::root_key(root),
             picker,
             last_used: AtomicU64::new(0),
+            scan_announced: AtomicBool::new(false),
         })
     }
 
@@ -107,6 +109,15 @@ impl Index {
         {
             picker.stop_background_monitor();
         }
+    }
+
+    /// True once, the first time this Index is seen with its walk finished.
+    pub fn take_scan_completion(&self) -> bool {
+        if self.progress().scanning {
+            self.scan_announced.store(false, Ordering::Relaxed);
+            return false;
+        }
+        !self.scan_announced.swap(true, Ordering::Relaxed)
     }
 
     /// Rough per-index footprint for `/stats`; the eviction decision uses RSS.

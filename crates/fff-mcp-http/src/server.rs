@@ -7,6 +7,7 @@ use axum::Router;
 use tokio::sync::watch;
 
 use crate::config::Config;
+use crate::memory::{MemoryProbe, OsMemoryProbe};
 use crate::registry::Registry;
 
 const SUBSUME_INTERVAL: Duration = Duration::from_millis(500);
@@ -46,6 +47,14 @@ impl Drop for RunningServer {
 
 /// Bind the configured address and serve in a background thread.
 pub fn spawn(config: Config) -> std::io::Result<RunningServer> {
+    spawn_with_probe(config, Arc::new(OsMemoryProbe))
+}
+
+/// Same as [`spawn`] with an injected memory probe (the test seam).
+pub fn spawn_with_probe(
+    config: Config,
+    probe: Arc<dyn MemoryProbe>,
+) -> std::io::Result<RunningServer> {
     let listener = TcpListener::bind(SocketAddr::new(config.bind, config.port))?;
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
@@ -68,7 +77,7 @@ pub fn spawn(config: Config) -> std::io::Result<RunningServer> {
             };
 
             runtime.block_on(async move {
-                let registry = match Registry::new(config) {
+                let registry = match Registry::with_probe(config, probe) {
                     Ok(registry) => Arc::new(registry),
                     Err(error) => {
                         tracing::error!(%error, "failed to start registry");
@@ -96,7 +105,8 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     };
 
     let app: Router = crate::api::router(registry.clone());
-    tokio::spawn(subsumption_tick(registry.clone(), shutdown.subscribe()));
+    tokio::spawn(housekeeping_tick(registry.clone(), shutdown.subscribe()));
+    tokio::spawn(eviction_tick(registry.clone(), shutdown.subscribe()));
     let signal = {
         let mut receiver = shutdown.subscribe();
         async move {
@@ -126,13 +136,35 @@ async fn run(listener: TcpListener, registry: Arc<Registry>, shutdown: watch::Se
     registry.shutdown();
 }
 
-/// Scans finish on their own schedule; this lets subsumption happen without
-/// waiting for the next request to arrive.
-async fn subsumption_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
+/// Scans finish on their own schedule; this lets subsumption and the
+/// post-scan eviction trigger happen without waiting for a request.
+async fn housekeeping_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(SUBSUME_INTERVAL) => registry.subsume_finished(),
+            _ = tokio::time::sleep(SUBSUME_INTERVAL) => {}
             _ = stop.changed() => return,
         }
+        let worker = registry.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            worker.subsume_finished();
+            worker.evict_finished_scans();
+        })
+        .await;
+    }
+}
+
+/// Background eviction trigger: measure the real footprint every interval.
+async fn eviction_tick(registry: Arc<Registry>, mut stop: watch::Receiver<bool>) {
+    let interval = registry.config().evict_interval;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = stop.changed() => return,
+        }
+        let worker = registry.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            worker.evict_now();
+        })
+        .await;
     }
 }

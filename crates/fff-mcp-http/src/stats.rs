@@ -37,13 +37,8 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
         .collect();
     indexes.sort_by_key(|index| index.last_used);
 
-    let used_bytes = indexes
-        .iter()
-        .map(|index| index.estimated_bytes as u64)
-        .sum();
-
     StatsResponse {
-        used_bytes,
+        used_bytes: registry.used_bytes(),
         budget_bytes: registry.config().max_memory_bytes,
         indexes,
     }

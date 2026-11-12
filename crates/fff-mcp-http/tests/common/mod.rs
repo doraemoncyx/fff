@@ -3,9 +3,11 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fff_mcp_http::{Config, RunningServer, spawn};
+use fff_mcp_http::{Config, MemoryProbe, RunningServer, spawn, spawn_with_probe};
 
 pub struct TestServer {
     server: Option<RunningServer>,
@@ -15,6 +17,16 @@ pub struct TestServer {
 impl TestServer {
     pub fn start(config: Config) -> Self {
         let server = spawn(config).expect("server binds");
+        Self::wrap(server)
+    }
+
+    /// Start with a scripted memory probe instead of the OS counter.
+    pub fn start_with_probe(config: Config, probe: Arc<dyn MemoryProbe>) -> Self {
+        let server = spawn_with_probe(config, probe).expect("server binds");
+        Self::wrap(server)
+    }
+
+    fn wrap(server: RunningServer) -> Self {
         let addr = server.addr();
         let mut test = Self {
             server: Some(server),
@@ -104,6 +116,64 @@ pub fn test_config() -> Config {
         port: 0,
         scan_wait: Duration::from_secs(20),
         ..Config::default()
+    }
+}
+
+/// Scripted memory probe: a queue of values, then a settled value.
+pub struct ScriptedProbe {
+    settle: AtomicU64,
+    queue: Mutex<std::collections::VecDeque<u64>>,
+    calls: AtomicUsize,
+    available: AtomicBool,
+}
+
+impl ScriptedProbe {
+    pub fn new(settle: u64) -> Arc<Self> {
+        Arc::new(Self {
+            settle: AtomicU64::new(settle),
+            queue: Mutex::new(std::collections::VecDeque::new()),
+            calls: AtomicUsize::new(0),
+            available: AtomicBool::new(true),
+        })
+    }
+
+    /// Value returned once the armed sequence is exhausted.
+    pub fn settle(&self, value: u64) {
+        self.settle.store(value, Ordering::SeqCst);
+    }
+
+    /// Serve these values first, then `settle`.
+    pub fn arm(&self, values: &[u64]) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.clear();
+        queue.extend(values.iter().copied());
+    }
+
+    pub fn disable(&self) {
+        self.available.store(false, Ordering::SeqCst);
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    pub fn reset_calls(&self) {
+        self.calls.store(0, Ordering::SeqCst);
+    }
+}
+
+impl MemoryProbe for ScriptedProbe {
+    fn used_bytes(&self) -> Option<u64> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.available.load(Ordering::SeqCst) {
+            return None;
+        }
+        let mut queue = self.queue.lock().unwrap();
+        Some(
+            queue
+                .pop_front()
+                .unwrap_or_else(|| self.settle.load(Ordering::SeqCst)),
+        )
     }
 }
 

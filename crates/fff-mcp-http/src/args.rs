@@ -66,6 +66,10 @@ pub struct Args {
     /// Exit after this many idle seconds. 0 disables.
     #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
     pub idle_timeout_secs: u64,
+
+    /// Test-only: expose POST /test/evict.
+    #[arg(long, hide = true)]
+    pub test_hook: bool,
 }
 
 impl From<Args> for Config {
@@ -84,6 +88,7 @@ impl From<Args> for Config {
             log_file: args.log_file,
             log_level: args.log_level,
             idle_timeout: std::time::Duration::from_secs(args.idle_timeout_secs),
+            test_hook: args.test_hook,
             ..Config::default()
         }
     }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{RawQuery, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -25,13 +25,17 @@ pub(crate) fn router(registry: Arc<Registry>) -> Router {
             .with_stateful_mode(false)
             .with_json_response(true),
     );
+    let test_hook = registry.config().test_hook;
 
-    Router::new()
+    let mut app = Router::new()
         .route("/healthz", get(healthz))
         .route("/search", get(search))
         .route("/stats", get(stats))
-        .route_service("/mcp", mcp)
-        .with_state(registry)
+        .route_service("/mcp", mcp);
+    if test_hook {
+        app = app.route("/test/evict", post(force_eviction));
+    }
+    app.with_state(registry)
 }
 
 async fn healthz() -> Json<serde_json::Value> {
@@ -53,4 +57,12 @@ async fn search(
 async fn stats(State(registry): State<Arc<Registry>>) -> Json<StatsResponse> {
     registry.mark_activity();
     Json(registry.stats())
+}
+
+/// Test hook: run one eviction round outside any request.
+async fn force_eviction(State(registry): State<Arc<Registry>>) -> Json<serde_json::Value> {
+    let evicted = tokio::task::spawn_blocking(move || registry.evict_now())
+        .await
+        .unwrap_or_default();
+    Json(json!({ "evicted": evicted }))
 }

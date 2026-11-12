@@ -47,6 +47,15 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
     let offset = resolve_offset(registry, params);
     let query = Query::normalize(params, offset)?;
     let serving = serving_set(registry, &query.tardir)?;
+    let serving_indexes: Vec<Arc<Index>> =
+        serving.iter().map(|entry| entry.index.clone()).collect();
+
+    // Free memory before the request runs. The serving set is exempt, and the
+    // request itself only counts as use once this round has picked its victims.
+    registry.evict_over_budget(&serving_indexes);
+    for index in &serving_indexes {
+        registry.touch(index);
+    }
 
     let deadline = Instant::now() + registry.config().scan_wait;
     for entry in &serving {
@@ -151,7 +160,6 @@ fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiEr
                     index.root().display()
                 ))
             })?;
-            registry.touch(&index);
             serving.push(Serving {
                 index,
                 prefix,
@@ -175,7 +183,6 @@ fn serving_set(registry: &Registry, tardir: &Path) -> Result<Vec<Serving>, ApiEr
     below.sort_by_key(|index| index.key().len());
     for index in below {
         let base = root::relative_to(index.root(), tardir).unwrap_or_default();
-        registry.touch(&index);
         serving.push(Serving {
             index,
             prefix: String::new(),

@@ -29,6 +29,8 @@ pub struct Config {
     pub disable_git: bool,
     pub disable_ignore_files: bool,
     pub allowed_hosts: Vec<String>,
+    /// Test-only: expose `POST /test/evict`.
+    pub test_hook: bool,
 }
 
 impl Default for Config {
@@ -52,6 +54,7 @@ impl Default for Config {
             disable_git: false,
             disable_ignore_files: false,
             allowed_hosts: Vec::new(),
+            test_hook: false,
         }
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,9 +10,13 @@ use crate::config::Config;
 use crate::cursor::CursorStore;
 use crate::error::ApiError;
 use crate::index::Index;
+use crate::memory::{MemoryProbe, OsMemoryProbe, collect_allocator};
 use crate::params::Params;
 use crate::search::{self, SearchResponse};
 use crate::stats::StatsResponse;
+
+const MAX_EVICTIONS_PER_ROUND: usize = 3;
+const EVICT_COOLDOWN_MS: u64 = 30_000;
 
 /// Root -> Index registry shared by every request.
 pub struct Registry {
@@ -22,10 +27,16 @@ pub struct Registry {
     ignore: FilePickerIgnoreOptions,
     cursors: Mutex<CursorStore>,
     last_activity: AtomicU64,
+    probe: Arc<dyn MemoryProbe>,
+    evicted_at: Mutex<HashMap<String, u64>>,
 }
 
 impl Registry {
     pub fn new(config: Config) -> Result<Self, ApiError> {
+        Self::with_probe(config, Arc::new(OsMemoryProbe))
+    }
+
+    pub fn with_probe(config: Config, probe: Arc<dyn MemoryProbe>) -> Result<Self, ApiError> {
         let frecency = SharedFrecency::default();
         if let Some(path) = &config.frecency_db {
             if let Some(parent) = path.parent() {
@@ -49,6 +60,8 @@ impl Registry {
             ignore: FilePickerIgnoreOptions::default(),
             cursors: Mutex::new(CursorStore::new()),
             last_activity: AtomicU64::new(now_millis()),
+            probe,
+            evicted_at: Mutex::new(HashMap::new()),
         })
     }
 
@@ -132,6 +145,87 @@ impl Registry {
         }
     }
 
+    /// Measured process usage, falling back to the per-Index estimates.
+    pub(crate) fn used_bytes(&self) -> u64 {
+        self.probe.used_bytes().unwrap_or_else(|| {
+            self.indices()
+                .iter()
+                .map(|index| index.estimated_bytes() as u64)
+                .sum()
+        })
+    }
+
+    /// One eviction round: measure, drop the LRU Index outside `serving`, repeat.
+    pub(crate) fn evict_over_budget(&self, serving: &[Arc<Index>]) -> Vec<String> {
+        let mut evicted = Vec::new();
+        while evicted.len() < MAX_EVICTIONS_PER_ROUND {
+            let used = self.used_bytes();
+            let budget = self.config.max_memory_bytes;
+            if used <= budget {
+                break;
+            }
+
+            let indexes = self.indices();
+            if indexes.len() <= 1 {
+                if let Some(index) = indexes.first() {
+                    tracing::warn!(
+                        root = %index.root().display(),
+                        used_bytes = used,
+                        budget_bytes = budget,
+                        "single index exceeds the memory budget, keeping it"
+                    );
+                }
+                break;
+            }
+
+            let victim = {
+                let cooling = self.evicted_at.lock();
+                pick_victim(&indexes, serving, &cooling, now_millis())
+            };
+            let Some(victim) = victim else { break };
+
+            victim.stop();
+            let key = victim.key().to_string();
+            let root = victim.root().to_string_lossy().into_owned();
+            drop(victim);
+            drop(indexes);
+            self.roots.write().retain(|index| index.key() != key);
+            collect_allocator();
+            self.remember_eviction(&key);
+            tracing::info!(
+                root = %root,
+                used_bytes = used,
+                budget_bytes = budget,
+                "evicted index over the memory budget"
+            );
+            evicted.push(key);
+        }
+        evicted
+    }
+
+    /// Test hook: force one round with no serving set.
+    pub fn evict_now(&self) -> Vec<String> {
+        self.evict_over_budget(&[])
+    }
+
+    /// Trigger point: a scan finished, so the room it needed may be free.
+    pub(crate) fn evict_finished_scans(&self) {
+        let finished = self
+            .indices()
+            .iter()
+            .any(|index| index.take_scan_completion());
+        if finished {
+            self.evict_over_budget(&[]);
+        }
+    }
+
+    fn remember_eviction(&self, key: &str) {
+        let now = now_millis();
+        let mut cooling = self.evicted_at.lock();
+        cooling.retain(|_, at| now.saturating_sub(*at) < EVICT_COOLDOWN_MS);
+        cooling.insert(key.to_string(), now);
+    }
+
     fn find(&self, key: &str) -> Option<Arc<Index>> {
         self.roots
             .read()
@@ -165,6 +259,26 @@ impl Registry {
         let last = self.last_activity.load(Ordering::Relaxed);
         std::time::Duration::from_millis(now_millis().saturating_sub(last))
     }
+}
+
+/// Least recently used Index that is neither serving this request nor cooling
+/// down after a recent eviction.
+fn pick_victim(
+    indexes: &[Arc<Index>],
+    serving: &[Arc<Index>],
+    cooling: &HashMap<String, u64>,
+    now: u64,
+) -> Option<Arc<Index>> {
+    indexes
+        .iter()
+        .filter(|index| !serving.iter().any(|entry| entry.key() == index.key()))
+        .filter(|index| {
+            cooling
+                .get(index.key())
+                .is_none_or(|at| now.saturating_sub(*at) >= EVICT_COOLDOWN_MS)
+        })
+        .min_by_key(|index| index.last_used())
+        .cloned()
 }
 
 fn now_millis() -> u64 {
