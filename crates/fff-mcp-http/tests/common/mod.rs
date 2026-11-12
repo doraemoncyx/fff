@@ -53,8 +53,23 @@ impl TestServer {
         request(self.addr, "GET", target, &[], None).expect("GET succeeds")
     }
 
+    pub fn get_with(&self, target: &str, headers: &[(&str, &str)]) -> Response {
+        request(self.addr, "GET", target, headers, None).expect("GET succeeds")
+    }
+
     pub fn post(&self, target: &str, body: &str, headers: &[(&str, &str)]) -> Response {
         request(self.addr, "POST", target, headers, Some(body)).expect("POST succeeds")
+    }
+
+    pub fn search_with(&self, params: &[(&str, &str)], headers: &[(&str, &str)]) -> Response {
+        self.get_with(&format!("/search?{}", encode(params)), headers)
+    }
+
+    pub fn mcp_with(&self, message: serde_json::Value, headers: &[(&str, &str)]) -> Response {
+        let body = serde_json::to_string(&message).unwrap();
+        let mut all = vec![("Accept", "application/json, text/event-stream")];
+        all.extend_from_slice(headers);
+        self.post("/mcp", &body, &all)
     }
 
     pub fn search(&self, params: &[(&str, &str)]) -> Response {
@@ -229,8 +244,14 @@ fn request(
     stream.set_read_timeout(Some(Duration::from_secs(120)))?;
     stream.set_write_timeout(Some(Duration::from_secs(120)))?;
 
-    let mut request =
-        format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    let mut request = format!("{method} {target} HTTP/1.1\r\nConnection: close\r\n");
+    // A caller-supplied Host exercises the DNS-rebinding allowlist.
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+    {
+        request.push_str(&format!("Host: {addr}\r\n"));
+    }
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }

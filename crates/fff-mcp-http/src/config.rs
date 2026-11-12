@@ -16,6 +16,12 @@ pub const DEFAULT_CONCURRENT_SCANS: usize = 2;
 pub const DEFAULT_EVICT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
+/// rmcp's own loopback allowlist; config entries are added to it.
+const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+pub const TOKEN_HINT: &str = "generate one with `openssl rand -hex 24`, \
+     or in PowerShell `[guid]::NewGuid().ToString('N')`, then pass --token <value>";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: IpAddr,
@@ -69,6 +75,40 @@ impl Default for Config {
 impl Config {
     pub fn is_loopback(&self) -> bool {
         self.bind.is_loopback()
+    }
+
+    /// The token to require, ignoring a blank one.
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+    }
+
+    /// Refuse a network-reachable bind that has no token to protect it.
+    pub fn check_access(&self) -> Result<(), String> {
+        if self.is_loopback() || self.bearer_token().is_some() {
+            return Ok(());
+        }
+        Err(format!(
+            "refusing to bind {} without --token: the endpoint would be reachable from the network; {TOKEN_HINT}",
+            self.bind
+        ))
+    }
+
+    /// rmcp's loopback hosts plus any extra names from the config file.
+    pub fn resolved_allowed_hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = LOOPBACK_HOSTS
+            .iter()
+            .map(|host| (*host).to_string())
+            .collect();
+        for host in &self.allowed_hosts {
+            let host = host.trim();
+            if !host.is_empty() && !hosts.iter().any(|known| known == host) {
+                hosts.push(host.to_string());
+            }
+        }
+        hosts
     }
 
     /// Default skip rules for trees where VCS metadata was copied in.
@@ -129,6 +169,7 @@ struct ConfigFile {
     disable_git: Option<bool>,
     disable_ignore_files: Option<bool>,
     idle_timeout_secs: Option<u64>,
+    allowed_hosts: Option<Vec<String>>,
 }
 
 impl ConfigFile {
@@ -186,6 +227,9 @@ impl ConfigFile {
         }
         if let Some(secs) = self.idle_timeout_secs {
             config.idle_timeout = Duration::from_secs(secs);
+        }
+        if let Some(hosts) = self.allowed_hosts {
+            config.allowed_hosts.extend(hosts);
         }
         Ok(())
     }
@@ -289,6 +333,60 @@ mod tests {
             };
             assert!(plain.ignore_options().is_ok());
         }
+    }
+
+    #[test]
+    fn non_loopback_bind_requires_a_token() {
+        let open = Config {
+            bind: "0.0.0.0".parse().unwrap(),
+            ..Config::default()
+        };
+        let message = open.check_access().unwrap_err();
+        assert!(message.contains("--token"), "{message}");
+        assert!(message.contains("openssl rand -hex 24"), "{message}");
+
+        let blank = Config {
+            token: Some("   ".into()),
+            ..open.clone()
+        };
+        assert!(blank.check_access().is_err());
+
+        let guarded = Config {
+            token: Some("s3cret".into()),
+            ..open
+        };
+        assert!(guarded.check_access().is_ok());
+        assert!(Config::default().check_access().is_ok());
+    }
+
+    #[test]
+    fn allowed_hosts_extend_the_loopback_defaults() {
+        assert_eq!(
+            Config::default().resolved_allowed_hosts(),
+            vec!["localhost", "127.0.0.1", "::1"]
+        );
+        let extended = Config {
+            allowed_hosts: vec!["example.test".into(), "127.0.0.1".into()],
+            ..Config::default()
+        };
+        assert_eq!(
+            extended.resolved_allowed_hosts(),
+            vec!["localhost", "127.0.0.1", "::1", "example.test"]
+        );
+    }
+
+    #[test]
+    fn config_file_extends_allowed_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts.toml");
+        std::fs::write(&path, "allowed_hosts = [\"box.test\"]\n").unwrap();
+        let config = Config::from_file(&path).unwrap();
+        assert_eq!(config.allowed_hosts, vec!["box.test".to_string()]);
+        assert!(
+            config
+                .resolved_allowed_hosts()
+                .contains(&"box.test".to_string())
+        );
     }
 
     #[test]

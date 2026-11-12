@@ -55,6 +55,11 @@ pub fn spawn_with_probe(
     config: Config,
     probe: Arc<dyn MemoryProbe>,
 ) -> std::io::Result<RunningServer> {
+    // An unprotected non-loopback bind is a misconfiguration, not a warning.
+    config
+        .check_access()
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+
     // Fail before binding a port when the walker cannot honour skip rules.
     let ignore = config
         .ignore_options()
