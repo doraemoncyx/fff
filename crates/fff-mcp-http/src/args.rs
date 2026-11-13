@@ -5,95 +5,148 @@ use clap::Parser;
 
 use crate::config::{Config, parse_memory};
 
-// Long-lived multi-root file finder: one request names a query and a tardir.
 #[derive(Debug, Parser)]
 #[command(
     name = "fff-mcp-http",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("FFF_GIT_HASH"), ")")
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("FFF_GIT_HASH"), ")"),
+    about = "Long-lived multi-root file finder over HTTP: every request names a query and a tardir",
+    after_help = "Every option is also a TOML key in the --config file (hyphens become\n\
+                  underscores, boolean flags are plain booleans). Command-line flags win.\n\n\
+                  --skip, --no-default-skips, --no-git and --no-ignore-files need the zlob\n\
+                  walker; a ripgrep-only build refuses to start with them.\n\n\
+                  Examples:\n  \
+                  fff-mcp-http --port 8737 --max-memory 3G\n  \
+                  fff-mcp-http --bind 0.0.0.0 --token <secret>\n  \
+                  fff-mcp-http --config ./fff-mcp-http.toml --log-level debug"
 )]
 pub struct Args {
-    // TOML config file; command-line flags override its values.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "TOML settings file; command-line flags override its keys"
+    )]
     pub config: Option<PathBuf>,
 
-    // Address to bind. Defaults to loopback.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "IP",
+        help = "Listen address, IPv4/IPv6 literal (default: 127.0.0.1); non-loopback needs --token"
+    )]
     pub bind: Option<IpAddr>,
 
-    // TCP port.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "PORT",
+        help = "TCP port, 0 = OS-picked (default: 8737)"
+    )]
     pub port: Option<u16>,
 
-    // Bearer token required for every endpoint except /healthz.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        help = "Bearer token for every endpoint except /healthz; required for non-loopback --bind"
+    )]
     pub token: Option<String>,
 
-    // Index memory budget, e.g. 3G, 512MB or a byte count.
-    #[arg(long, value_parser = parse_memory)]
+    #[arg(
+        long,
+        value_name = "SIZE",
+        value_parser = parse_memory,
+        help = "Memory budget for all indexes (default: 3G); K/M/G/T are binary, 1.5G is allowed"
+    )]
     pub max_memory: Option<u64>,
 
-    // Longest time a request waits for a scan before returning partial results.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "SECS",
+        help = "Seconds to wait for a tardir's first scan before answering partially (default: 20)"
+    )]
     pub scan_wait_secs: Option<u64>,
 
-    // Upper bound on concurrently running initial scans.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Initial scans running at once, the rest queue (default: 2, min 1)"
+    )]
     pub max_concurrent_scans: Option<usize>,
 
-    // How often the background eviction tick measures memory.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "SECS",
+        help = "Seconds between memory checks that may evict idle Roots (default: 30, min 1)"
+    )]
     pub evict_interval_secs: Option<u64>,
 
-    // Disable the filesystem watcher; indexes stay at their initial snapshot.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Do not watch the filesystem; indexes stay at their initial scan"
+    )]
     pub no_watch: bool,
 
-    // Follow symlinks while walking.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Follow symlinks while walking (default: off, may loop or duplicate paths)"
+    )]
     pub follow_symlinks: bool,
 
-    // Build the bigram content index after each scan; grep's prefilter (default on).
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Build the bigram content index after each scan, grep's prefilter (default: on)"
+    )]
     pub content_indexing: bool,
 
-    // Skip the content index: grep reads every indexed file, using less RAM.
-    #[arg(long, conflicts_with = "content_indexing")]
+    #[arg(
+        long,
+        conflicts_with = "content_indexing",
+        help = "Skip the content index: grep reads every file (less RAM, slower grep)"
+    )]
     pub no_content_indexing: bool,
 
-    // Frecency database path. Disabled when omitted.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Frecency database directory (default: none, frecency scoring off)"
+    )]
     pub frecency_db: Option<PathBuf>,
 
-    // Log file path-shape hint; each launch writes a fresh timestamped sibling.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Log path hint; each launch writes <stem>+<timestamp>+<pid>.log (default: <state dir>/fff/)"
+    )]
     pub log_file: Option<PathBuf>,
 
-    // Log level (trace, debug, info, warn, error).
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        help = "Log verbosity: trace, debug, info, warn or error (default: info; RUST_LOG wins)"
+    )]
     pub log_level: Option<String>,
 
-    // Exit after this many idle seconds. 0 disables.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "SECS",
+        help = "Exit after SECS without a request; /healthz is not activity (default: 3600, 0 = never)"
+    )]
     pub idle_timeout_secs: Option<u64>,
 
-    // Extra gitignore-style skip pattern, repeatable.
-    #[arg(long = "skip", value_name = "PATTERN")]
+    #[arg(
+        long = "skip",
+        value_name = "PATTERN",
+        help = "Extra gitignore-style skip pattern, repeatable (applies to new Roots)"
+    )]
     pub skip: Vec<String>,
 
-    // Drop the built-in .svn/, .hg/ and CVS/ skip rules.
-    #[arg(long)]
+    #[arg(long, help = "Drop the built-in .svn/, .hg/ and CVS/ skip rules")]
     pub no_default_skips: bool,
 
-    // Do not read .gitignore rules and skip Git integration.
-    #[arg(long)]
+    #[arg(long, help = "Ignore .gitignore rules and skip git integration")]
     pub no_git: bool,
 
-    // Do not read .ignore files.
-    #[arg(long)]
+    #[arg(long, help = "Ignore .ignore files")]
     pub no_ignore_files: bool,
 
-    // Test-only: expose POST /test/evict.
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, help = "Test-only: expose POST /test/evict")]
     pub test_hook: bool,
 }
 
@@ -216,6 +269,24 @@ mod tests {
         DEFAULT_CONCURRENT_SCANS, DEFAULT_EVICT_INTERVAL_SECS, DEFAULT_IDLE_TIMEOUT_SECS,
         DEFAULT_PORT, DEFAULT_SCAN_WAIT_SECS,
     };
+
+    #[test]
+    fn every_visible_option_documents_itself() {
+        use clap::CommandFactory;
+        for arg in Args::command().get_arguments() {
+            if arg.is_hide_set() {
+                continue;
+            }
+            assert!(
+                arg.get_help()
+                    .is_some_and(|help| !help.to_string().trim().is_empty()),
+                "--{} has no help text",
+                arg.get_long()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| arg.get_id().to_string())
+            );
+        }
+    }
 
     #[test]
     fn default_log_file_is_absolute_and_isolated() {
