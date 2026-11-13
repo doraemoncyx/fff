@@ -1172,6 +1172,10 @@ pub(crate) struct BigramBuildStats {
     pub(crate) row_hits: u64,
     pub(crate) row_misses: u64,
     pub(crate) content_reads: u64,
+    /// Non-indexable files passed to the byte sniffer, and how many of those
+    /// took their verdict from a Snapshot row instead.
+    pub(crate) sniffed: u64,
+    pub(crate) sniff_hits: u64,
 }
 
 #[tracing::instrument(skip_all, name = "Building Bigram Index", level = tracing::Level::DEBUG)]
@@ -1316,11 +1320,13 @@ pub(crate) fn build_bigram_index(
         row_hits: hits.load(Ordering::Relaxed) as u64,
         row_misses: misses.load(Ordering::Relaxed) as u64,
         content_reads: reads.load(Ordering::Relaxed) as u64,
+        ..Default::default()
     };
     (index, stats)
 }
 
 #[tracing::instrument(skip_all, name = "Sniffing Large Files Binary", level = tracing::Level::DEBUG)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sniff_binary_for_non_indexable(
     files: &[FileItem],
     file_offset: usize,
@@ -1329,6 +1335,8 @@ pub(crate) fn sniff_binary_for_non_indexable(
     base_path: &std::path::Path,
     arena: crate::simd_path::ArenaPtr,
     cancelled: &std::sync::atomic::AtomicBool,
+    source: Option<&crate::index::RowSource<'_>>,
+    stats: &mut BigramBuildStats,
 ) {
     // Snapshot rows key on (size, mtime_ns); `files` starts at `file_offset`.
     debug_assert!(mtime_ns.len() >= file_offset + files.len());
@@ -1338,25 +1346,46 @@ pub(crate) fn sniff_binary_for_non_indexable(
     let mut chunk = vec![0u8; crate::types::BINARY_CLASSIFICATION_CHUNK_SIZE];
     use std::sync::atomic::Ordering;
 
-    for (i, file) in files.iter().enumerate() {
-        // check every 256 files to avoid useless work
-        if (i & 0xFF) == 0 && cancelled.load(Ordering::Acquire) {
+    // Rows are read in the same 256-file chunks the content pass uses.
+    let mut start = 0usize;
+    while start < files.len() {
+        if cancelled.load(Ordering::Acquire) {
             return;
         }
+        let base_idx = file_offset + start;
+        let len = (BIGRAM_CHUNK_FILES - base_idx % BIGRAM_CHUNK_FILES).min(files.len() - start);
+        let files_chunk = &files[start..start + len];
+        let chunk_rows = source
+            .map(|source| {
+                let ns = mtime_ns.get(base_idx..base_idx + len).unwrap_or_default();
+                source.fetch_verdicts(files_chunk, ns, arena, &mut path_buf)
+            })
+            .unwrap_or_default();
 
-        let file_index = file_offset + i;
-        // check only the files that we are able to grep
-        if file.size == 0
-            || file.size > constants::MAX_FFFILE_SIZE
-            || known_text
-                .get(file_index / 64)
-                .is_some_and(|&word| word & (1u64 << (file_index % 64)) != 0)
-        {
-            continue;
+        for (offset, file) in files_chunk.iter().enumerate() {
+            let file_index = base_idx + offset;
+            // A row with a matching identity already holds this file's verdict.
+            if let Some(row) = chunk_rows.get(offset).and_then(Option::as_ref) {
+                file.set_binary(row.binary);
+                stats.sniff_hits += 1;
+                continue;
+            }
+
+            // check only the files that we are able to grep
+            if file.size == 0
+                || file.size > constants::MAX_FFFILE_SIZE
+                || known_text
+                    .get(file_index / 64)
+                    .is_some_and(|&word| word & (1u64 << (file_index % 64)) != 0)
+            {
+                continue;
+            }
+
+            stats.sniffed += 1;
+            let abs = file.write_absolute_path(arena, base_path, &mut path_buf);
+            file.detect_binary_per_byte(abs, &mut chunk);
         }
-
-        let abs = file.write_absolute_path(arena, base_path, &mut path_buf);
-        file.detect_binary_per_byte(abs, &mut chunk);
+        start += len;
     }
 }
 

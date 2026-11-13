@@ -364,7 +364,7 @@ impl ScanJob {
                 .map(|store| RowSource::new(store, &unsafe_snapshot.base_path));
             let indexable_count = unsafe_snapshot.indexable_count.min(files.len());
             let (indexable_files, non_indexable_files) = files.split_at(indexable_count);
-            let (index, stats) = build_bigram_index(
+            let (index, mut stats) = build_bigram_index(
                 indexable_files,
                 &mtime_ns[..indexable_count],
                 &unsafe_snapshot.base_path,
@@ -395,6 +395,8 @@ impl ScanJob {
                     &unsafe_snapshot.base_path,
                     arena,
                     &signals.cancelled,
+                    source.as_ref(),
+                    &mut stats,
                 );
             }
 
@@ -413,6 +415,7 @@ impl ScanJob {
         }
 
         // this potentially a long running as we are not parallelizing it but it's okay
+        let mut stats = BigramBuildStats::default();
         sniff_binary_for_non_indexable(
             files,
             0,
@@ -421,13 +424,15 @@ impl ScanJob {
             &unsafe_snapshot.base_path,
             arena,
             &signals.cancelled,
+            None,
+            &mut stats,
         );
 
         // TODO Skipped as potentially unsafe - figure this out later
         // if config.warmup && !signals.cancelled.load(Ordering::Acquire) {
         //     warmup_mmaps(files, budget, &unsafe_snapshot.base_path, arena);
         // }
-        BigramBuildStats::default()
+        stats
     }
 }
 
@@ -1012,5 +1017,127 @@ mod tests {
         assert_eq!(warm.row_hits, 4);
 
         assert_same_answers(&from_files, &from_rows);
+    }
+
+    fn non_indexable_fixture(root: &std::path::Path) {
+        // Empty: never sniffed, still needs a verdict row.
+        std::fs::write(root.join("empty.txt"), "").unwrap();
+        // Binary by extension: non-indexable without a content read.
+        std::fs::write(root.join("photo.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        // Over the content-index limit: sniffed, never indexed.
+        let over = vec![b'a'; crate::constants::MAX_INDEXABLE_FILE_SIZE + 1];
+        std::fs::write(root.join("large.txt"), over).unwrap();
+        std::fs::write(root.join("plain.txt"), "plain_marker\n").unwrap();
+    }
+
+    #[test]
+    fn a_second_scan_takes_non_indexable_verdicts_from_their_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        non_indexable_fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        assert_eq!(cold.sniffed, 2, "the png and the over-limit text file");
+        assert_eq!(cold.sniff_hits, 0);
+        let first_matches = matches(&first, "plain_marker");
+        assert_eq!(first_matches.len(), 1);
+        drop(first);
+        let rows_before = store.logical_bytes(root).unwrap();
+
+        let (second, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.sniffed, 0, "nothing non-indexable was sniffed");
+        assert_eq!(
+            warm.sniff_hits, 3,
+            "empty, png and over-limit came from rows"
+        );
+        assert_eq!(warm.content_reads, 0);
+        assert_eq!(matches(&second, "plain_marker"), first_matches);
+        // Served verdict rows are rewritten, so they must not inflate the Root.
+        assert_eq!(store.logical_bytes(root).unwrap(), rows_before);
+        assert_eq!(
+            store.read_meta(root).unwrap().unwrap().logical_bytes,
+            rows_before
+        );
+    }
+
+    #[test]
+    fn grep_still_refuses_a_binary_served_from_a_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let limit = crate::constants::MAX_INDEXABLE_FILE_SIZE + 1;
+
+        // Over the limit and binary, but with a text-looking prefix.
+        let mut blob = vec![0u8; limit];
+        blob[..19].copy_from_slice(b"blob_marker_inside\n");
+        std::fs::write(root.join("blob.dat"), blob).unwrap();
+        // Over the limit and text: non-indexable, yet grep-able.
+        let mut text = vec![b'a'; limit];
+        text[..23].copy_from_slice(b"large_text_marker_line\n");
+        std::fs::write(root.join("large.txt"), text).unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        assert_eq!(cold.sniffed, 2);
+        assert_eq!(matches(&first, "blob_marker").len(), 0);
+        assert_eq!(matches(&first, "large_text_marker").len(), 1);
+        drop(first);
+
+        let (second, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.sniffed, 0);
+        assert_eq!(warm.sniff_hits, 2);
+        assert_eq!(matches(&second, "blob_marker").len(), 0);
+        assert_eq!(matches(&second, "large_text_marker").len(), 1);
+    }
+
+    #[test]
+    fn a_changed_non_indexable_file_is_sniffed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let limit = crate::constants::MAX_INDEXABLE_FILE_SIZE;
+        let base =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+
+        let mut text = vec![b'a'; limit + 1];
+        text[..12].copy_from_slice(b"text_marker\n");
+        std::fs::write(root.join("big.txt"), &text).unwrap();
+        set_mtime(&root.join("big.txt"), base);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        assert_eq!(cold.sniffed, 1);
+        assert_eq!(matches(&first, "text_marker").len(), 1);
+        drop(first);
+
+        // Same size, new bytes, new ns mtime: the row identity must miss.
+        let mut blob = vec![0u8; limit + 1];
+        blob[..14].copy_from_slice(b"bin_marker\0abc");
+        std::fs::write(root.join("big.txt"), &blob).unwrap();
+        set_mtime(
+            &root.join("big.txt"),
+            base + std::time::Duration::from_secs(1),
+        );
+        let (second, same_size) = run_scan(root, Some(&store));
+        assert_eq!(same_size.sniffed, 1, "a new mtime must force a sniff");
+        assert_eq!(same_size.sniff_hits, 0);
+        assert_eq!(matches(&second, "bin_marker").len(), 0);
+        drop(second);
+
+        // Same path, new size: sniffed again, and the new text verdict is kept.
+        let mut bigger = vec![b'b'; limit + 2];
+        bigger[..13].copy_from_slice(b"third_marker\n");
+        std::fs::write(root.join("big.txt"), &bigger).unwrap();
+        set_mtime(
+            &root.join("big.txt"),
+            base + std::time::Duration::from_secs(2),
+        );
+        let (third, grown) = run_scan(root, Some(&store));
+        assert_eq!(grown.sniffed, 1, "a new size must force a sniff");
+        assert_eq!(grown.sniff_hits, 0);
+        assert_eq!(matches(&third, "bin_marker").len(), 0);
+        assert_eq!(matches(&third, "third_marker").len(), 1);
     }
 }

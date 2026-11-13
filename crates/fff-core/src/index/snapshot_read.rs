@@ -42,6 +42,29 @@ impl<'a> RowSource<'a> {
         arena: ArenaPtr,
         buf: &mut [u8; PATH_BUF_SIZE],
     ) -> Vec<Option<Row>> {
+        self.fetch_chunk(files, mtime_ns, arena, buf, true)
+    }
+
+    // Verdict-only rows are rewritten by every scan, so serving one saves a
+    // sniff but no disk; its bytes must not count as served.
+    pub(crate) fn fetch_verdicts(
+        &self,
+        files: &[FileItem],
+        mtime_ns: &[u64],
+        arena: ArenaPtr,
+        buf: &mut [u8; PATH_BUF_SIZE],
+    ) -> Vec<Option<Row>> {
+        self.fetch_chunk(files, mtime_ns, arena, buf, false)
+    }
+
+    fn fetch_chunk(
+        &self,
+        files: &[FileItem],
+        mtime_ns: &[u64],
+        arena: ArenaPtr,
+        buf: &mut [u8; PATH_BUF_SIZE],
+        count_served: bool,
+    ) -> Vec<Option<Row>> {
         let mut slots = vec![None; files.len()];
         if !self.current || files.is_empty() {
             return slots;
@@ -76,7 +99,9 @@ impl<'a> RowSource<'a> {
             if !replayable(&row) {
                 continue;
             }
-            self.served_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            if count_served {
+                self.served_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            }
             slots[index] = Some(row);
         }
         slots
