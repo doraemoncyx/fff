@@ -1336,6 +1336,7 @@ pub(crate) fn sniff_binary_for_non_indexable(
     arena: crate::simd_path::ArenaPtr,
     cancelled: &std::sync::atomic::AtomicBool,
     source: Option<&crate::index::RowSource<'_>>,
+    rows: Option<&crate::index::RowSink<'_>>,
     stats: &mut BigramBuildStats,
 ) {
     // Snapshot rows key on (size, mtime_ns); `files` starts at `file_offset`.
@@ -1358,13 +1359,14 @@ pub(crate) fn sniff_binary_for_non_indexable(
         let chunk_rows = source
             .map(|source| {
                 let ns = mtime_ns.get(base_idx..base_idx + len).unwrap_or_default();
-                source.fetch_verdicts(files_chunk, ns, arena, &mut path_buf)
+                source.fetch(files_chunk, ns, arena, &mut path_buf)
             })
             .unwrap_or_default();
 
         for (offset, file) in files_chunk.iter().enumerate() {
             let file_index = base_idx + offset;
-            // A row with a matching identity already holds this file's verdict.
+            // A row with a matching identity already holds this file's verdict;
+            // rewriting it would cost the scan that row's bytes for nothing.
             if let Some(row) = chunk_rows.get(offset).and_then(Option::as_ref) {
                 file.set_binary(row.binary);
                 stats.sniff_hits += 1;
@@ -1378,15 +1380,33 @@ pub(crate) fn sniff_binary_for_non_indexable(
                     .get(file_index / 64)
                     .is_some_and(|&word| word & (1u64 << (file_index % 64)) != 0)
             {
+                push_verdict(rows, file, file_index, mtime_ns, arena, &mut path_buf);
                 continue;
             }
 
             stats.sniffed += 1;
             let abs = file.write_absolute_path(arena, base_path, &mut path_buf);
             file.detect_binary_per_byte(abs, &mut chunk);
+            push_verdict(rows, file, file_index, mtime_ns, arena, &mut path_buf);
         }
         start += len;
     }
+}
+
+// A non-indexable file still records its identity and its Binary verdict.
+fn push_verdict(
+    rows: Option<&crate::index::RowSink<'_>>,
+    file: &FileItem,
+    file_index: usize,
+    mtime_ns: &[u64],
+    arena: crate::simd_path::ArenaPtr,
+    buf: &mut [u8; crate::simd_path::PATH_BUF_SIZE],
+) {
+    let Some(rows) = rows else {
+        return;
+    };
+    let ns = mtime_ns.get(file_index).copied().unwrap_or(0);
+    rows.push_verdict(file, ns, arena, buf);
 }
 
 /// Drop the per-thread read/normalize buffers (up to 2 x 2 MiB per pool thread)

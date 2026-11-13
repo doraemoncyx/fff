@@ -1,5 +1,8 @@
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+#[cfg(test)]
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use heed::Database;
@@ -7,6 +10,9 @@ use heed::types::{Bytes, SerdeBincode};
 use serde::{Deserialize, Serialize};
 
 use super::env_pool::SharedEnv;
+use super::snapshot_budget::SnapshotBudget;
+use super::snapshot_ops;
+use super::snapshot_writer::SnapshotWriter;
 use crate::constants::MAX_INDEXABLE_FILE_SIZE;
 use crate::error::{Error, Result};
 use crate::index::bigram_filter::{
@@ -17,10 +23,10 @@ use crate::lmdb::{DbHealth, LmdbStore};
 
 pub const SNAPSHOT_SCHEMA: u16 = 1;
 
-const KIND_META: u8 = 0;
-const KIND_FILE: u8 = 1;
-const ROOT_PREFIX_LEN: usize = 16;
-const KEY_LEN: usize = ROOT_PREFIX_LEN + 1 + 32;
+pub(crate) const KIND_META: u8 = 0;
+pub(crate) const KIND_FILE: u8 = 1;
+pub(crate) const ROOT_PREFIX_LEN: usize = 16;
+pub(crate) const KEY_LEN: usize = ROOT_PREFIX_LEN + 1 + 32;
 // Commit point for Snapshot rows: one write transaction per this many rows.
 pub(crate) const ROW_BATCH: usize = 2000;
 const NO_PAYLOAD: [u8; 32] = [0u8; 32];
@@ -41,6 +47,8 @@ pub struct SnapshotStore {
     env: SharedEnv,
     db: Database<Bytes, Bytes>,
     health: DbHealth,
+    budget: Arc<SnapshotBudget>,
+    writer: SnapshotWriter,
 }
 
 impl LmdbStore for SnapshotStore {
@@ -61,22 +69,51 @@ impl LmdbStore for SnapshotStore {
 
 impl SnapshotStore {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_budget(path, u64::MAX)
+    }
+
+    // `budget_bytes` caps the sum of every Root's rows; `u64::MAX` keeps them all.
+    pub fn open_with_budget(path: &Path, budget_bytes: u64) -> Result<Self> {
         let (env, health) = Self::open_env(path)?;
         let db: Database<Bytes, Bytes> = Self::open_database_safe(&env, None)?;
-        Ok(Self { env, db, health })
+        let budget = Arc::new(SnapshotBudget::new(budget_bytes));
+        if budget.is_bounded()
+            && let Err(error) = budget.load(&env, &db)
+        {
+            tracing::warn!(?error, "snapshot budget could not read the Roots it holds");
+        }
+
+        let writer = SnapshotWriter::spawn(env.clone(), db, Arc::clone(&budget));
+        writer.housekeep();
+        Ok(Self {
+            env,
+            db,
+            health,
+            budget,
+            writer,
+        })
     }
 
     pub fn put_meta(&self, root: &Path, logical_bytes: u64) -> Result<()> {
-        self.write_meta(
-            root,
-            &SnapshotMeta {
-                schema: SNAPSHOT_SCHEMA,
-                fingerprint: fingerprint(),
-                logical_bytes,
-                last_used: now_secs(),
-                root: normalized_root(root),
-            },
-        )
+        let meta = SnapshotMeta {
+            schema: SNAPSHOT_SCHEMA,
+            fingerprint: fingerprint(),
+            logical_bytes,
+            last_used: now_secs(),
+            root: normalized_root(root),
+        };
+        let prefix = root_prefix(root);
+        snapshot_ops::put_meta(&self.env, &self.db, &prefix, &meta)?;
+        self.budget.record(prefix, &meta);
+        Ok(())
+    }
+
+    // A Root's rows and meta, as one range over its prefix.
+    pub fn delete_root(&self, root: &Path) -> Result<bool> {
+        let prefix = root_prefix(root);
+        let deleted = snapshot_ops::delete_root(&self.env, &self.db, &prefix)?;
+        self.budget.forget(prefix);
+        Ok(deleted)
     }
 
     // A Root's rows may be replayed only when its meta names this Root and was
@@ -136,28 +173,6 @@ impl SnapshotStore {
             })
     }
 
-    // Writes `(relative path hash, encoded row)` pairs, committing every
-    // `ROW_BATCH` rows. Returns the bytes written.
-    pub(crate) fn put_rows<I>(&self, root: &Path, rows: I) -> Result<u64>
-    where
-        I: Iterator<Item = ([u8; 32], Vec<u8>)>,
-    {
-        let prefix = root_prefix(root);
-        let mut batch: Vec<([u8; 32], Vec<u8>)> = Vec::with_capacity(ROW_BATCH);
-        let mut written = 0u64;
-        for (payload, value) in rows {
-            written += value.len() as u64;
-            batch.push((payload, value));
-            if batch.len() >= ROW_BATCH {
-                self.commit_rows(&prefix, &mut batch)?;
-            }
-        }
-        if !batch.is_empty() {
-            self.commit_rows(&prefix, &mut batch)?;
-        }
-        Ok(written)
-    }
-
     pub fn row_count(&self, root: &Path) -> Result<u64> {
         let mut count = 0u64;
         self.for_each_row(root, |_| count += 1)?;
@@ -170,6 +185,79 @@ impl SnapshotStore {
         Ok(total)
     }
 
+    // Hands one batch to the writer thread and returns the bytes queued.
+    pub(crate) fn write_rows(&self, root: &Path, rows: Vec<([u8; 32], Vec<u8>)>) -> u64 {
+        self.writer.push_rows(root_prefix(root), rows)
+    }
+
+    // Removes the Root's rows whose hash is absent from `keep`, then rewrites
+    // its meta with what actually remains.
+    pub(crate) fn sweep(&self, root: &Path, keep: HashSet<[u8; 32]>) {
+        self.writer
+            .push_sweep(root_prefix(root), normalized_root(root), Arc::new(keep));
+    }
+
+    pub(crate) fn queue_meta(&self, root: &Path, logical_bytes: u64) {
+        self.writer.push_meta(
+            root_prefix(root),
+            SnapshotMeta {
+                schema: SNAPSHOT_SCHEMA,
+                fingerprint: fingerprint(),
+                logical_bytes,
+                last_used: now_secs(),
+                root: normalized_root(root),
+            },
+        );
+    }
+
+    pub(crate) fn mark_active(&self, root: &Path) {
+        self.budget.mark_active(root_prefix(root));
+    }
+
+    pub(crate) fn mark_idle(&self, root: &Path) {
+        self.budget.mark_idle(root_prefix(root));
+    }
+
+    // Waits for every queued write to land; false means the writer stalled.
+    #[cfg(test)]
+    pub(crate) fn flush(&self, timeout: Duration) -> bool {
+        self.writer.flush(timeout)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commits(&self) -> u64 {
+        self.writer
+            .counters()
+            .commits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rows_written(&self) -> u64 {
+        self.writer
+            .counters()
+            .rows
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dropped_batches(&self) -> u64 {
+        self.writer
+            .counters()
+            .dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enforce_limits(&self) -> Result<u64> {
+        snapshot_ops::enforce_limits(&self.env, &self.db, &self.budget)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn total_bytes(&self) -> u64 {
+        self.budget.total()
+    }
+
     fn for_each_row(&self, root: &Path, mut on_value: impl FnMut(&[u8])) -> Result<()> {
         let rtxn = self
             .env
@@ -178,7 +266,7 @@ impl SnapshotStore {
                 db: Self::LABEL,
                 source,
             })?;
-        let prefix = file_prefix(root);
+        let prefix = file_prefix(&root_prefix(root));
         let iter = self
             .db
             .prefix_iter(&rtxn, &prefix)
@@ -200,27 +288,8 @@ impl SnapshotStore {
         self.db.remap_data_type()
     }
 
-    fn write_meta(&self, root: &Path, meta: &SnapshotMeta) -> Result<()> {
-        let mut wtxn = self
-            .env
-            .write_txn()
-            .map_err(|source| Error::DbStartWriteTxn {
-                db: Self::LABEL,
-                source,
-            })?;
-        self.meta_db()
-            .put(&mut wtxn, &meta_key(&root_prefix(root)), meta)
-            .map_err(|source| Error::DbWrite {
-                db: Self::LABEL,
-                source,
-            })?;
-        wtxn.commit().map_err(|source| Error::DbCommit {
-            db: Self::LABEL,
-            source,
-        })
-    }
-
-    // Lets tests plant a meta that a future build wrote, or another Root's.
+    // Lets tests plant a meta that a future build wrote, another Root's, or one
+    // that went unused long ago.
     #[cfg(test)]
     pub(crate) fn put_foreign_meta(
         &self,
@@ -229,9 +298,9 @@ impl SnapshotStore {
         fingerprint: u64,
         stored_root: &str,
     ) -> Result<()> {
-        self.write_meta(
+        self.put_meta_row(
             root,
-            &SnapshotMeta {
+            SnapshotMeta {
                 schema,
                 fingerprint,
                 logical_bytes: 0,
@@ -241,37 +310,43 @@ impl SnapshotStore {
         )
     }
 
-    fn commit_rows(
-        &self,
-        prefix: &[u8; ROOT_PREFIX_LEN],
-        batch: &mut Vec<([u8; 32], Vec<u8>)>,
-    ) -> Result<()> {
-        let mut wtxn = self
-            .env
-            .write_txn()
-            .map_err(|source| Error::DbStartWriteTxn {
-                db: Self::LABEL,
-                source,
-            })?;
-        for (payload, value) in batch.iter() {
-            let key = key_bytes(prefix, KIND_FILE, payload);
-            self.db
-                .put(&mut wtxn, &key, value)
-                .map_err(|source| Error::DbWrite {
-                    db: Self::LABEL,
-                    source,
-                })?;
-        }
-        wtxn.commit().map_err(|source| Error::DbCommit {
-            db: Self::LABEL,
-            source,
-        })?;
-        batch.clear();
+    #[cfg(test)]
+    pub(crate) fn put_meta_row(&self, root: &Path, meta: SnapshotMeta) -> Result<()> {
+        let prefix = root_prefix(root);
+        snapshot_ops::put_meta(&self.env, &self.db, &prefix, &meta)?;
+        self.budget.record(prefix, &meta);
         Ok(())
+    }
+
+    // Synchronous seeding for tests: batches in, one write transaction each.
+    #[cfg(test)]
+    pub(crate) fn put_rows<I>(&self, root: &Path, rows: I) -> Result<u64>
+    where
+        I: Iterator<Item = ([u8; 32], Vec<u8>)>,
+    {
+        let mut batch: Vec<([u8; 32], Vec<u8>)> = Vec::with_capacity(ROW_BATCH);
+        let mut written = 0u64;
+        for (payload, value) in rows {
+            written += value.len() as u64;
+            batch.push((payload, value));
+            if batch.len() >= ROW_BATCH {
+                self.writer
+                    .push_rows(root_prefix(root), std::mem::take(&mut batch));
+            }
+        }
+        if !batch.is_empty() {
+            self.writer.push_rows(root_prefix(root), batch);
+        }
+        self.flush(Duration::from_secs(30));
+        Ok(written)
     }
 }
 
-fn key_bytes(prefix: &[u8; ROOT_PREFIX_LEN], kind: u8, payload: &[u8; 32]) -> [u8; KEY_LEN] {
+pub(crate) fn key_bytes(
+    prefix: &[u8; ROOT_PREFIX_LEN],
+    kind: u8,
+    payload: &[u8; 32],
+) -> [u8; KEY_LEN] {
     let mut key = [0u8; KEY_LEN];
     key[..ROOT_PREFIX_LEN].copy_from_slice(prefix);
     key[ROOT_PREFIX_LEN] = kind;
@@ -279,20 +354,19 @@ fn key_bytes(prefix: &[u8; ROOT_PREFIX_LEN], kind: u8, payload: &[u8; 32]) -> [u
     key
 }
 
-fn meta_key(prefix: &[u8; ROOT_PREFIX_LEN]) -> [u8; KEY_LEN] {
+pub(crate) fn meta_key(prefix: &[u8; ROOT_PREFIX_LEN]) -> [u8; KEY_LEN] {
     key_bytes(prefix, KIND_META, &NO_PAYLOAD)
 }
 
 // Shared by every row of a Root and nothing else, so a Root is one range.
-fn file_prefix(root: &Path) -> [u8; ROOT_PREFIX_LEN + 1] {
-    let prefix = root_prefix(root);
+pub(crate) fn file_prefix(prefix: &[u8; ROOT_PREFIX_LEN]) -> [u8; ROOT_PREFIX_LEN + 1] {
     let mut out = [0u8; ROOT_PREFIX_LEN + 1];
-    out[..ROOT_PREFIX_LEN].copy_from_slice(&prefix);
+    out[..ROOT_PREFIX_LEN].copy_from_slice(prefix);
     out[ROOT_PREFIX_LEN] = KIND_FILE;
     out
 }
 
-fn root_prefix(root: &Path) -> [u8; ROOT_PREFIX_LEN] {
+pub(crate) fn root_prefix(root: &Path) -> [u8; ROOT_PREFIX_LEN] {
     let mut prefix = [0u8; ROOT_PREFIX_LEN];
     let hash = blake3::hash(normalized_root(root).as_bytes());
     prefix.copy_from_slice(&hash.as_bytes()[..ROOT_PREFIX_LEN]);
@@ -301,7 +375,7 @@ fn root_prefix(root: &Path) -> [u8; ROOT_PREFIX_LEN] {
 
 // Same rule the service keys Roots with: canonical, `/`-separated, and ASCII
 // lowercased on Windows.
-fn normalized_root(root: &Path) -> String {
+pub(crate) fn normalized_root(root: &Path) -> String {
     let canonical = crate::path_utils::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let text = canonical.to_string_lossy().replace('\\', "/");
     let text = text.strip_prefix("//?/").unwrap_or(&text);
@@ -315,7 +389,7 @@ fn normalized_root(root: &Path) -> String {
 
 // Hash of the constants a row's bytes depend on, so a row derived differently
 // cannot be mistaken for a hit.
-fn fingerprint() -> u64 {
+pub(crate) fn fingerprint() -> u64 {
     static FINGERPRINT: OnceLock<u64> = OnceLock::new();
     *FINGERPRINT.get_or_init(|| {
         let mut hasher = blake3::Hasher::new();
@@ -333,7 +407,7 @@ fn fingerprint() -> u64 {
     })
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -343,9 +417,22 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dbs::snapshot_budget::ROOT_MAX_AGE_SECS;
+
+    const WAIT: Duration = Duration::from_secs(30);
 
     fn row(id: u8, len: usize) -> ([u8; 32], Vec<u8>) {
         ([id; 32], vec![id; len])
+    }
+
+    fn meta(root: &Path, logical_bytes: u64, last_used: u64) -> SnapshotMeta {
+        SnapshotMeta {
+            schema: SNAPSHOT_SCHEMA,
+            fingerprint: fingerprint(),
+            logical_bytes,
+            last_used,
+            root: normalized_root(root),
+        }
     }
 
     #[test]
@@ -409,6 +496,26 @@ mod tests {
         assert_eq!(store.row_count(root).unwrap(), total as u64);
         assert_eq!(written, (total * 20) as u64);
         assert_eq!(store.logical_bytes(root).unwrap(), written);
+    }
+
+    // One write transaction per batch, not one per file.
+    #[test]
+    fn rows_are_committed_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        let before = store.commits();
+
+        let total = ROW_BATCH * 3 + 1;
+        let rows = (0..total).map(|i| {
+            let mut payload = [0u8; 32];
+            payload[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            (payload, vec![7u8; 20])
+        });
+        store.put_rows(root, rows).unwrap();
+
+        assert_eq!(store.commits() - before, 4, "four batches, four commits");
+        assert_eq!(store.rows_written(), total as u64);
     }
 
     #[test]
@@ -526,5 +633,172 @@ mod tests {
             .put_foreign_meta(root, SNAPSHOT_SCHEMA, fingerprint(), "elsewhere/repo")
             .unwrap();
         assert!(!store.root_is_current(root), "a foreign root");
+    }
+
+    // The whole Root goes as one range, meta included, and no other Root moves.
+    #[test]
+    fn deleting_a_root_leaves_every_other_root_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("kept");
+        let doomed = dir.path().join("doomed");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::create_dir_all(&doomed).unwrap();
+
+        let store = SnapshotStore::open(&dir.path().join("snapshot-db")).unwrap();
+        store.put_rows(&kept, [row(1, 10)].into_iter()).unwrap();
+        store.put_meta(&kept, 10).unwrap();
+        store
+            .put_rows(&doomed, [row(2, 20), row(3, 30)].into_iter())
+            .unwrap();
+        store.put_meta(&doomed, 50).unwrap();
+
+        assert!(store.delete_root(&doomed).unwrap());
+        assert!(store.read_meta(&doomed).unwrap().is_none());
+        assert_eq!(store.row_count(&doomed).unwrap(), 0);
+        assert!(store.read_meta(&kept).unwrap().is_some());
+        assert_eq!(store.row_count(&kept).unwrap(), 1);
+        assert!(
+            !store.delete_root(&doomed).unwrap(),
+            "nothing left to delete"
+        );
+    }
+
+    // Serving every row must not rewrite any: the sweep only drops orphans.
+    #[test]
+    fn a_sweep_keeps_the_served_rows_and_drops_the_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        store
+            .put_rows(
+                root,
+                [payload(1), payload(2), payload(3)].into_iter().zip([
+                    encoded(1),
+                    encoded(2),
+                    encoded(3),
+                ]),
+            )
+            .unwrap();
+        let before = store.logical_bytes(root).unwrap();
+
+        let keep: HashSet<[u8; 32]> = [payload(1), payload(3)].into_iter().collect();
+        store.sweep(root, keep);
+        assert!(store.flush(WAIT));
+
+        assert_eq!(store.row_count(root).unwrap(), 2);
+        let after = store.logical_bytes(root).unwrap();
+        assert_eq!(store.read_meta(root).unwrap().unwrap().logical_bytes, after);
+        assert_eq!(after, before - encoded(2).len() as u64);
+        assert_eq!(store.rows_written(), 3, "the sweep rewrote nothing");
+    }
+
+    fn seed_root(store: &SnapshotStore, root: &Path, bytes: u64, last_used: u64) {
+        std::fs::create_dir_all(root).unwrap();
+        store
+            .put_rows(root, [row(1, bytes as usize)].into_iter())
+            .unwrap();
+        store
+            .put_meta_row(root, meta(root, bytes, last_used))
+            .unwrap();
+        assert!(store.flush(WAIT));
+    }
+
+    // Over budget, the least recently used Roots go first and the newest one
+    // keeps every row it had.
+    #[test]
+    fn the_budget_deletes_whole_roots_least_recently_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = now_secs();
+        let roots: Vec<_> = ["oldest", "middle", "newest"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+
+        let store = SnapshotStore::open_with_budget(&dir.path().join("db"), 500).unwrap();
+        seed_root(&store, &roots[0], 200, now - 300);
+        seed_root(&store, &roots[1], 200, now - 200);
+        seed_root(&store, &roots[2], 200, now - 100);
+
+        assert_eq!(store.enforce_limits().unwrap(), 1);
+        assert!(store.read_meta(&roots[0]).unwrap().is_none(), "LRU victim");
+        assert_eq!(store.row_count(&roots[0]).unwrap(), 0);
+        assert_eq!(store.row_count(&roots[1]).unwrap(), 1);
+        assert_eq!(store.row_count(&roots[2]).unwrap(), 1);
+        assert_eq!(store.total_bytes(), 400);
+        assert!(store.total_bytes() <= 500);
+    }
+
+    // Age expiry is independent of the budget: the store is well under it.
+    #[test]
+    fn a_root_unused_past_the_age_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("stale");
+        let fresh = dir.path().join("fresh");
+        let now = now_secs();
+
+        let store = SnapshotStore::open(&dir.path().join("db")).unwrap();
+        seed_root(&store, &stale, 10, now - ROOT_MAX_AGE_SECS - 1);
+        seed_root(&store, &fresh, 10, now);
+
+        // The writer may already have dropped the stale Root on its own pass.
+        assert!(store.enforce_limits().unwrap() <= 1);
+        assert!(store.read_meta(&stale).unwrap().is_none());
+        assert_eq!(store.row_count(&stale).unwrap(), 0);
+        assert_eq!(store.row_count(&fresh).unwrap(), 1);
+    }
+
+    // A Root mid-scan is never a victim, even when it alone blows the budget.
+    #[test]
+    fn an_active_root_is_never_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let busy = dir.path().join("busy");
+        let idle = dir.path().join("idle");
+        let now = now_secs();
+
+        let store = SnapshotStore::open_with_budget(&dir.path().join("db"), 10).unwrap();
+        // Protected from the first commit: a scan marks its Root before writing.
+        store.mark_active(&busy);
+        seed_root(&store, &busy, 200, now);
+        seed_root(&store, &idle, 200, now - 60);
+
+        assert_eq!(store.enforce_limits().unwrap(), 1);
+        assert!(store.read_meta(&busy).unwrap().is_some());
+        assert!(store.read_meta(&idle).unwrap().is_none());
+        store.mark_idle(&busy);
+    }
+
+    // A writer that cannot drain drops the oldest pending batch and never
+    // blocks the producer or fails silently.
+    #[test]
+    fn a_stalled_writer_drops_batches_and_keeps_the_producer_moving() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        store.writer.pause();
+
+        let mut pushed = Vec::new();
+        for batch in 0..40u8 {
+            let rows: Vec<_> = (0..ROW_BATCH as u16)
+                .map(|i| {
+                    let mut payload = [0u8; 32];
+                    payload[0] = batch;
+                    payload[1..3].copy_from_slice(&i.to_le_bytes());
+                    (payload, vec![batch; 8])
+                })
+                .collect();
+            pushed.push(store.write_rows(root, rows));
+            assert_eq!(store.rows_written(), 0, "the writer is held");
+        }
+        assert!(pushed.iter().all(|&bytes| bytes > 0));
+        assert!(store.dropped_batches() > 0, "the queue stayed bounded");
+
+        store.writer.resume();
+        assert!(store.flush(WAIT));
+        let rows = store.row_count(root).unwrap();
+        assert!(rows > 0, "the surviving batches landed");
+        assert!(
+            rows < ROW_BATCH as u64 * 40,
+            "some batches were dropped: {rows} rows"
+        );
     }
 }

@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::dbs::SnapshotStore;
 use crate::index::bigram_row::Row;
@@ -12,7 +12,6 @@ pub(crate) struct RowSource<'a> {
     store: &'a SnapshotStore,
     root: &'a Path,
     current: bool,
-    served_bytes: AtomicU64,
     read_failed: AtomicBool,
 }
 
@@ -22,15 +21,14 @@ impl<'a> RowSource<'a> {
             store,
             root,
             current: store.root_is_current(root),
-            served_bytes: AtomicU64::new(0),
             read_failed: AtomicBool::new(false),
         }
     }
 
-    // Bytes of the rows this scan reused instead of rewriting; they are still
-    // on disk, so the Root's logical size is this plus what the scan wrote.
-    pub(crate) fn served_bytes(&self) -> u64 {
-        self.served_bytes.load(Ordering::Relaxed)
+    // Whether the Root already held rows when this scan started. Without them
+    // the scan is a first write and has no orphans to sweep.
+    pub(crate) fn was_current(&self) -> bool {
+        self.current
     }
 
     // One read transaction per chunk, opened and dropped on this thread. One
@@ -41,29 +39,6 @@ impl<'a> RowSource<'a> {
         mtime_ns: &[u64],
         arena: ArenaPtr,
         buf: &mut [u8; PATH_BUF_SIZE],
-    ) -> Vec<Option<Row>> {
-        self.fetch_chunk(files, mtime_ns, arena, buf, true)
-    }
-
-    // Verdict-only rows are rewritten by every scan, so serving one saves a
-    // sniff but no disk; its bytes must not count as served.
-    pub(crate) fn fetch_verdicts(
-        &self,
-        files: &[FileItem],
-        mtime_ns: &[u64],
-        arena: ArenaPtr,
-        buf: &mut [u8; PATH_BUF_SIZE],
-    ) -> Vec<Option<Row>> {
-        self.fetch_chunk(files, mtime_ns, arena, buf, false)
-    }
-
-    fn fetch_chunk(
-        &self,
-        files: &[FileItem],
-        mtime_ns: &[u64],
-        arena: ArenaPtr,
-        buf: &mut [u8; PATH_BUF_SIZE],
-        count_served: bool,
     ) -> Vec<Option<Row>> {
         let mut slots = vec![None; files.len()];
         if !self.current || files.is_empty() {
@@ -88,7 +63,7 @@ impl<'a> RowSource<'a> {
         }
 
         for (index, entry) in stored.into_iter().enumerate() {
-            let Some((row, bytes)) = entry else {
+            let Some((row, _)) = entry else {
                 continue;
             };
             // Identity is size plus nanosecond mtime and nothing else.
@@ -98,9 +73,6 @@ impl<'a> RowSource<'a> {
             }
             if !replayable(&row) {
                 continue;
-            }
-            if count_served {
-                self.served_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
             }
             slots[index] = Some(row);
         }

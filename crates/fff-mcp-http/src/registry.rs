@@ -442,7 +442,8 @@ fn open_snapshot(config: &Config) -> Option<Arc<SnapshotStore>> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match SnapshotStore::open(path) {
+    let budget = config.snapshot_budget_mb.saturating_mul(1024 * 1024);
+    match SnapshotStore::open_with_budget(path, budget) {
         Ok(store) => Some(Arc::new(store)),
         Err(error) => {
             tracing::warn!(?error, path = %path.display(), "snapshot disabled");

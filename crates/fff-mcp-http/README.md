@@ -161,16 +161,20 @@ environment's data before opening it.
 
 - `--no-snapshot` turns the Snapshot off, and `--snapshot-budget-mb 0` does the
   same. Off means nothing is written and nothing is read.
-- `--snapshot-budget-mb <MB>` (default `512`) caps the disk the Snapshot may
-  use. Enforcement arrives with the read path; for now the value only decides
-  whether the Snapshot is on.
+- `--snapshot-budget-mb <MB>` (default `512`) caps the disk every Root's rows may
+  use. After each batch commit the store deletes whole Roots, least recently used
+  first, until the total fits; a Root unused for 14 days is deleted in the same
+  pass, and a Root that is being scanned is never a victim.
+- Writing never delays a scan: rows go to one writer thread that commits in
+  batches of 2000. If that thread stalls the oldest pending batch is dropped, and
+  a lost batch is a row miss on the next scan, never a wrong answer.
 - The database file does not shrink after deletions: LMDB keeps the space a
   deleted Root occupied, so `data.mdb` stays at its high-water mark.
   `--snapshot-reset` is the way to reclaim it.
 
-Right now the Snapshot is write-only: it cannot accelerate anything until the
-read path lands, so every scan still builds the Content index from file
-contents and every restart still pays for it.
+A second scan of an unchanged tree reads no file contents at all: it replays each
+row into the same content-index builder the file pass uses, then serves grep from
+that index exactly as before.
 
 ## Scans
 

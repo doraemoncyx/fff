@@ -1,38 +1,34 @@
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::dbs::snapshot_store::{ROW_BATCH, SnapshotStore};
 use crate::index::bigram_row::Row;
 use crate::simd_path::{ArenaPtr, PATH_BUF_SIZE};
 use crate::types::FileItem;
 
-// Collects a scan's Snapshot rows and hands them to the store in batches.
+// Collects a scan's Snapshot rows and hands whole batches to the store's writer.
 pub(crate) struct RowSink<'a> {
     store: &'a SnapshotStore,
     root: &'a Path,
     pending: Mutex<Vec<([u8; 32], Vec<u8>)>>,
     bytes: AtomicU64,
-    failed: AtomicBool,
 }
 
 impl<'a> RowSink<'a> {
     pub(crate) fn new(store: &'a SnapshotStore, root: &'a Path) -> Self {
+        store.mark_active(root);
         Self {
             store,
             root,
             pending: Mutex::new(Vec::with_capacity(ROW_BATCH)),
             bytes: AtomicU64::new(0),
-            failed: AtomicBool::new(false),
         }
     }
 
     // A file whose row cannot be encoded is dropped, never a scan failure.
     pub(crate) fn push(&self, relative_path: &str, row: &Row) {
-        if self.failed.load(Ordering::Relaxed) {
-            return;
-        }
         let Some(value) = row.encode() else {
             return;
         };
@@ -49,36 +45,27 @@ impl<'a> RowSink<'a> {
         self.flush(batch);
     }
 
-    // Verdict-only rows: a file the content pass never opened still records
-    // its identity and its Binary verdict.
-    pub(crate) fn push_verdicts(
+    // A row with no keys: the identity and the Binary verdict of a file the
+    // content pass never opened.
+    pub(crate) fn push_verdict(
         &self,
-        files: &[FileItem],
-        offset: usize,
-        mtime_ns: &[u64],
+        file: &FileItem,
+        mtime_ns: u64,
         arena: ArenaPtr,
+        buf: &mut [u8; PATH_BUF_SIZE],
     ) {
-        let mut buf = [0u8; PATH_BUF_SIZE];
-        let mut row = Row {
-            mtime_ns: 0,
-            size: 0,
-            binary: false,
+        let row = Row {
+            mtime_ns,
+            size: file.size,
+            binary: file.is_binary(),
             consecutive: Vec::new(),
             skip1: Vec::new(),
         };
-        for (index, file) in files.iter().enumerate() {
-            let Some(&ns) = mtime_ns.get(offset + index) else {
-                continue;
-            };
-            row.mtime_ns = ns;
-            row.size = file.size;
-            row.binary = file.is_binary();
-            let rel = relative_path(file, arena, &mut buf);
-            self.push(&rel, &row);
-        }
+        let rel = relative_path(file, arena, buf);
+        self.push(&rel, &row);
     }
 
-    // Flushes the tail and returns the row bytes this scan wrote.
+    // Hands the tail to the writer and returns the row bytes this scan queued.
     pub(crate) fn finish(&self) -> u64 {
         let batch = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -91,15 +78,14 @@ impl<'a> RowSink<'a> {
     }
 
     fn flush(&self, batch: Vec<([u8; 32], Vec<u8>)>) {
-        match self.store.put_rows(self.root, batch.into_iter()) {
-            Ok(bytes) => {
-                self.bytes.fetch_add(bytes, Ordering::Relaxed);
-            }
-            Err(e) => {
-                self.failed.store(true, Ordering::Relaxed);
-                tracing::warn!(?e, "snapshot write failed; no Snapshot for this scan");
-            }
-        }
+        let bytes = self.store.write_rows(self.root, batch);
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+impl Drop for RowSink<'_> {
+    fn drop(&mut self) {
+        self.store.mark_idle(self.root);
     }
 }
 
@@ -120,6 +106,9 @@ pub(crate) fn relative_path<'b>(
 mod tests {
     use super::*;
     use crate::index::bigram_filter::MAX_BIGRAM_COLUMNS;
+    use std::time::Duration;
+
+    const WAIT: Duration = Duration::from_secs(30);
 
     fn row(consecutive: Vec<u16>, skip1: Vec<u16>) -> Row {
         Row {
@@ -145,6 +134,7 @@ mod tests {
         sink.push("ok.txt", &row(vec![0x6162], vec![0x6163]));
 
         assert!(sink.finish() > 0);
+        assert!(store.flush(WAIT));
         assert_eq!(store.row_count(root.path()).unwrap(), 1);
     }
 
@@ -157,6 +147,7 @@ mod tests {
         sink.push("a.txt", &row(vec![0x6162], Vec::new()));
         let written = sink.finish();
 
+        assert!(store.flush(WAIT));
         assert_eq!(written, store.logical_bytes(root.path()).unwrap());
         assert_eq!(store.row_count(root.path()).unwrap(), 1);
     }

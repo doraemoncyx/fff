@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -396,18 +397,19 @@ impl ScanJob {
                     arena,
                     &signals.cancelled,
                     source.as_ref(),
+                    rows.as_ref(),
                     &mut stats,
                 );
             }
 
-            // Verdict rows come after the sniff: it is what decides binary for them.
-            if let (Some(rows), Some(store)) = (rows, config.snapshot_store.as_ref()) {
-                rows.push_verdicts(non_indexable_files, indexable_count, mtime_ns, arena);
-                // Rows this scan reused are still on disk; only the rest was written.
-                let served = source.as_ref().map_or(0, RowSource::served_bytes);
-                let logical_bytes = rows.finish() + served;
-                if let Err(e) = store.put_meta(&unsafe_snapshot.base_path, logical_bytes) {
-                    tracing::warn!(?e, "snapshot meta write failed");
+            // Every row is already queued; the sweep is what drops the ones whose
+            // files disappeared and the only pass that knows what remains.
+            if let (Some(rows), Some(store)) = (&rows, config.snapshot_store.as_ref()) {
+                let written = rows.finish();
+                if source.as_ref().is_some_and(RowSource::was_current) {
+                    store.sweep(&unsafe_snapshot.base_path, scan_keys(files, arena));
+                } else {
+                    store.queue_meta(&unsafe_snapshot.base_path, written);
                 }
             }
 
@@ -424,6 +426,7 @@ impl ScanJob {
             &unsafe_snapshot.base_path,
             arena,
             &signals.cancelled,
+            None,
             None,
             &mut stats,
         );
@@ -473,6 +476,21 @@ fn rescubscribe_watcher_post_scan(shared_picker: &SharedFilePicker) {
         watcher.request_watch_dir(dir.to_path_buf());
         std::ops::ControlFlow::Continue(())
     });
+}
+
+// Relative-path hashes of the scan's file set: a row absent from this is an orphan.
+fn scan_keys(
+    files: &[crate::types::FileItem],
+    arena: crate::simd_path::ArenaPtr,
+) -> HashSet<[u8; 32]> {
+    let mut buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
+    files
+        .iter()
+        .map(|file| {
+            let rel = crate::index::snapshot_write::relative_path(file, arena, &mut buf);
+            *blake3::hash(rel.as_bytes()).as_bytes()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -527,6 +545,10 @@ mod tests {
         };
         let stats = ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
         drop(snapshot);
+        // Writes are off the scan thread; a test reads them back immediately.
+        if let Some(store) = store {
+            assert!(store.flush(std::time::Duration::from_secs(60)));
+        }
         (shared, stats)
     }
 
@@ -1045,6 +1067,7 @@ mod tests {
         assert_eq!(first_matches.len(), 1);
         drop(first);
         let rows_before = store.logical_bytes(root).unwrap();
+        let written_before = store.rows_written();
 
         let (second, warm) = run_scan(root, Some(&store));
         assert_eq!(warm.sniffed, 0, "nothing non-indexable was sniffed");
@@ -1054,7 +1077,8 @@ mod tests {
         );
         assert_eq!(warm.content_reads, 0);
         assert_eq!(matches(&second, "plain_marker"), first_matches);
-        // Served verdict rows are rewritten, so they must not inflate the Root.
+        // Every row, verdict-only ones included, was served, so none was rewritten.
+        assert_eq!(store.rows_written(), written_before, "no row was rewritten");
         assert_eq!(store.logical_bytes(root).unwrap(), rows_before);
         assert_eq!(
             store.read_meta(root).unwrap().unwrap().logical_bytes,
@@ -1139,5 +1163,79 @@ mod tests {
         assert_eq!(grown.sniff_hits, 0);
         assert_eq!(matches(&third, "bin_marker").len(), 0);
         assert_eq!(matches(&third, "third_marker").len(), 1);
+    }
+
+    // Two Roots scanning at the same time never serialise behind each other's
+    // writes: one writer thread takes both queues.
+    #[test]
+    fn two_roots_scanned_at_once_both_keep_all_their_rows() {
+        let db = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        fixture(first.path());
+        fixture(second.path());
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        std::thread::scope(|scope| {
+            let left = scope.spawn(|| run_scan(first.path(), Some(&store)));
+            let right = scope.spawn(|| run_scan(second.path(), Some(&store)));
+            assert_eq!(left.join().unwrap().1.row_hits, 0);
+            assert_eq!(right.join().unwrap().1.row_hits, 0);
+        });
+
+        for root in [first.path(), second.path()] {
+            assert_eq!(store.row_count(root).unwrap(), 4, "{root:?}");
+            let meta = store.read_meta(root).unwrap().expect("meta");
+            assert_eq!(meta.logical_bytes, store.logical_bytes(root).unwrap());
+        }
+    }
+
+    // A row for a file that is gone would be dead weight until the age expiry.
+    #[test]
+    fn a_file_that_disappeared_loses_its_row_and_no_other_root_is_touched() {
+        let db = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        fixture(root.path());
+        std::fs::write(other.path().join("keep.txt"), "keep_marker\n").unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        drop(run_scan(root.path(), Some(&store)));
+        drop(run_scan(other.path(), Some(&store)));
+        assert_eq!(store.row_count(root.path()).unwrap(), 4);
+
+        std::fs::remove_file(root.path().join("beta.txt")).unwrap();
+        let (second, warm) = run_scan(root.path(), Some(&store));
+
+        assert_eq!(warm.row_hits, 3, "the survivors were still served");
+        assert_eq!(store.row_count(root.path()).unwrap(), 3);
+        assert_eq!(matches(&second, "marker").len(), 2);
+        assert_eq!(
+            store.read_meta(root.path()).unwrap().unwrap().logical_bytes,
+            store.logical_bytes(root.path()).unwrap(),
+            "the meta follows the sweep"
+        );
+        assert_eq!(store.row_count(other.path()).unwrap(), 1);
+        assert!(store.read_meta(other.path()).unwrap().is_some());
+    }
+
+    // The anti-regression for the trap: a warm scan must not delete and rewrite.
+    #[test]
+    fn a_warm_scan_rewrites_no_row() {
+        let db = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fixture(root.path());
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        drop(run_scan(root.path(), Some(&store)));
+        let written = store.rows_written();
+        let bytes = store.logical_bytes(root.path()).unwrap();
+
+        let (_, warm) = run_scan(root.path(), Some(&store));
+
+        assert_eq!(warm.content_reads, 0);
+        assert_eq!(warm.row_hits, 4);
+        assert_eq!(store.rows_written(), written, "not one row was rewritten");
+        assert_eq!(store.logical_bytes(root.path()).unwrap(), bytes);
     }
 }
