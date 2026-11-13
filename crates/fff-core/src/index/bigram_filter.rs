@@ -1091,9 +1091,12 @@ fn read_bigram_chunk<'a>(
 #[tracing::instrument(skip_all, name = "Building Bigram Index", level = tracing::Level::DEBUG)]
 pub(crate) fn build_bigram_index(
     files: &[crate::types::FileItem],
+    mtime_ns: &[u64],
     base_path: &std::path::Path,
     arena: crate::simd_path::ArenaPtr,
 ) -> BigramFilter {
+    // Snapshot rows key on (size, mtime_ns) per file.
+    debug_assert_eq!(mtime_ns.len(), files.len());
     let builder = BigramIndexBuilder::new(files.len());
     let skip_builder = BigramIndexBuilder::new(files.len());
 
@@ -1173,10 +1176,13 @@ pub(crate) fn sniff_binary_for_non_indexable(
     files: &[FileItem],
     file_offset: usize,
     known_text: &[u64],
+    mtime_ns: &[u64],
     base_path: &std::path::Path,
     arena: crate::simd_path::ArenaPtr,
     cancelled: &std::sync::atomic::AtomicBool,
 ) {
+    // Snapshot rows key on (size, mtime_ns); `files` starts at `file_offset`.
+    debug_assert!(mtime_ns.len() >= file_offset + files.len());
     // Non-indexable files are few in a typical repo, so a serial pass with a
     // single reused chunk buffer beats spinning up the thread pool.
     let mut path_buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
@@ -1679,7 +1685,8 @@ mod tests {
             file.set_path(path);
         }
 
-        let index = build_bigram_index(&files, base, store.as_arena_ptr());
+        let mtime_ns = vec![0u64; files.len()];
+        let index = build_bigram_index(&files, &mtime_ns, base, store.as_arena_ptr());
         let candidates = index
             .query(b"unicorn")
             .expect("the text files must be in the index");

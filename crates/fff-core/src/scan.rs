@@ -337,6 +337,12 @@ impl ScanJob {
         };
 
         let files: &[crate::types::FileItem] = &unsafe_snapshot.files[..unsafe_snapshot.base_count];
+        // Nanosecond identities for the same range; a length mismatch can only
+        // mean overflow files leaked in, so fall back to "no identity".
+        let mtime_ns = unsafe_snapshot
+            .mtime_ns
+            .get(..files.len())
+            .unwrap_or_default();
         if signals.cancelled.load(Ordering::Acquire) {
             return;
         }
@@ -344,7 +350,12 @@ impl ScanJob {
         if config.content_indexing {
             let indexable_count = unsafe_snapshot.indexable_count.min(files.len());
             let (indexable_files, non_indexable_files) = files.split_at(indexable_count);
-            let index = build_bigram_index(indexable_files, &unsafe_snapshot.base_path, arena);
+            let index = build_bigram_index(
+                indexable_files,
+                &mtime_ns[..indexable_count],
+                &unsafe_snapshot.base_path,
+                arena,
+            );
 
             // A root change may have replaced the picker while this index was building.
             if let Ok(mut guard) = shared_picker.write()
@@ -364,6 +375,7 @@ impl ScanJob {
                     non_indexable_files,
                     indexable_count,
                     known_text,
+                    mtime_ns,
                     &unsafe_snapshot.base_path,
                     arena,
                     &signals.cancelled,
@@ -375,6 +387,7 @@ impl ScanJob {
                 files,
                 0,
                 known_text,
+                mtime_ns,
                 &unsafe_snapshot.base_path,
                 arena,
                 &signals.cancelled,
@@ -484,6 +497,59 @@ mod tests {
         let guard = shared.read().unwrap();
         let picker = guard.as_ref().unwrap();
         let query = crate::grep::parse_grep_query("isolated_marker");
+        let options = crate::grep::GrepSearchOptions {
+            time_budget_ms: 0,
+            ..Default::default()
+        };
+        assert_eq!(picker.grep(&query, &options).matches.len(), 1);
+    }
+
+    // The ns identity must survive the sort and the indexable partition and
+    // reach the index stage; the file table keeps whole seconds.
+    #[test]
+    fn post_scan_carries_nanosecond_mtime_into_the_content_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "alpha_marker").unwrap();
+        std::fs::write(root.join("b.txt"), "beta_marker").unwrap();
+        std::fs::write(root.join("blob.bin"), [0u8; 32]).unwrap();
+
+        let shared = SharedFilePicker::default();
+        let picker = collected(root);
+        let signals = picker.scan_signals();
+        *shared.write().unwrap() = Some(picker);
+
+        let snapshot = shared
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|picker| unsafe { picker.post_scan_snapshot() })
+            .unwrap();
+
+        assert_eq!(snapshot.mtime_ns.len(), snapshot.base_count);
+        assert!(snapshot.base_count >= 3);
+
+        let arena = snapshot.arena.as_ref().unwrap().as_arena_ptr();
+        let mut buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
+        for (index, file) in snapshot.files[..snapshot.base_count].iter().enumerate() {
+            let abs = file.write_absolute_path(arena, root, &mut buf);
+            let expected = crate::walk::mtime_ns(std::fs::metadata(abs).unwrap().modified().ok());
+
+            assert_eq!(snapshot.mtime_ns[index], expected, "{abs:?}");
+            // Same file, still whole seconds in the file table.
+            assert_eq!(file.modified, expected / 1_000_000_000, "{abs:?}");
+        }
+
+        let config = ScanConfig {
+            content_indexing: true,
+            ..Default::default()
+        };
+        ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
+        drop(snapshot);
+
+        let guard = shared.read().unwrap();
+        let picker = guard.as_ref().unwrap();
+        let query = crate::grep::parse_grep_query("alpha_marker");
         let options = crate::grep::GrepSearchOptions {
             time_budget_ms: 0,
             ..Default::default()

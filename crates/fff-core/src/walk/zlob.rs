@@ -4,7 +4,7 @@ use crate::file_picker::{
 };
 use crate::ignore::IGNORED_DIRS;
 use crate::types::FileItem;
-use crate::walk::{WalkIgnoreRules, WalkOutput};
+use crate::walk::{WalkIgnoreRules, WalkOutput, mtime_ns};
 use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,9 +68,9 @@ pub(crate) fn walk_collect_files(
     // dir, so this keeps one mutex acquisition per entry.
     let collected = Mutex::new((Vec::new(), Vec::new()));
 
-    let push_pair = |item: FileItem, rel_str: String| {
+    let push_pair = |item: FileItem, rel_str: String, modified_ns: u64| {
         let mut guard = collected.lock();
-        guard.0.push((item, rel_str));
+        guard.0.push((item, rel_str, modified_ns));
         let n = guard.0.len();
         drop(guard);
 
@@ -111,11 +111,10 @@ pub(crate) fn walk_collect_files(
                 let offset = rel_dir.len() as u16;
                 let item = FileItem::new_raw(offset, 0, 0, None, false);
                 item.set_symlink_dir(true);
-                push_pair(item, rel_dir);
+                push_pair(item, rel_dir, 0);
             } else {
-                let modified = target
-                    .modified()
-                    .ok()
+                let time = target.modified().ok();
+                let modified = time
                     .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_secs());
                 let basename_offset = entry.basename_offset_in_relative_lossy();
@@ -132,7 +131,7 @@ pub(crate) fn walk_collect_files(
                 );
                 item.mark_definition_language(basename);
                 item.set_symlink(true);
-                push_pair(item, rel_str);
+                push_pair(item, rel_str, mtime_ns(time));
             }
             return WalkState::Continue;
         }
@@ -175,14 +174,16 @@ pub(crate) fn walk_collect_files(
         let is_binary = is_known_binary_extension_basename(basename)
             && (!is_ambiguous_binary_name(basename) || starts_with_binary_content(entry.path()));
 
-        let (size, modified) = match target {
-            Some(meta) => (
-                meta.len(),
-                meta.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs()),
-            ),
+        let (size, modified, modified_ns) = match target {
+            Some(meta) => {
+                let time = meta.modified().ok();
+                (
+                    meta.len(),
+                    time.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs()),
+                    mtime_ns(time),
+                )
+            }
             // zlob reports mtime in ns since the Unix epoch; FileItem wants secs.
             None => (
                 entry.size().unwrap_or(0),
@@ -190,6 +191,7 @@ pub(crate) fn walk_collect_files(
                     .modified_ns()
                     .map(|ns| (ns / 1_000_000_000).max(0) as u64)
                     .unwrap_or(0),
+                entry.modified_ns().map_or(0, |ns| ns.max(0) as u64),
             ),
         };
 
@@ -197,7 +199,7 @@ pub(crate) fn walk_collect_files(
         item.mark_definition_language(basename);
 
         let mut guard = collected.lock();
-        guard.0.push((item, relative_path));
+        guard.0.push((item, relative_path, modified_ns));
         let n = guard.0.len();
         drop(guard);
 

@@ -32,7 +32,7 @@ fn collects_symlinks_like_regular_files_and_dirs() {
     // follow_symlinks=false — symlinks must still be visible.
     let out =
         walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
-    let names: Vec<String> = out.pairs.iter().map(|(_, rel)| rel.clone()).collect();
+    let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
     if file_link_created {
         assert!(
@@ -42,7 +42,7 @@ fn collects_symlinks_like_regular_files_and_dirs() {
         let file_link = out
             .pairs
             .iter()
-            .find(|(_, rel)| rel == "link.txt")
+            .find(|(_, rel, _)| rel == "link.txt")
             .expect("file link present");
         assert!(file_link.0.is_symlink());
         assert!(!file_link.0.is_symlink_dir());
@@ -57,7 +57,7 @@ fn collects_symlinks_like_regular_files_and_dirs() {
         let marker = out
             .pairs
             .iter()
-            .find(|(_, rel)| rel == "link_dir/")
+            .find(|(_, rel, _)| rel == "link_dir/")
             .expect("marker present");
         assert!(marker.0.is_symlink_dir());
     }

@@ -7,6 +7,7 @@
 
 use crate::types::FileItem;
 use std::path::Path;
+use std::time::SystemTime;
 
 #[cfg(feature = "zlob")]
 mod zlob;
@@ -19,7 +20,9 @@ mod ripgrep;
 pub(crate) use ripgrep::walk_collect_files;
 
 pub(crate) struct WalkOutput {
-    pub(crate) pairs: Vec<(FileItem, String)>,
+    /// File item, relative path, and the file's modification time in
+    /// nanoseconds since the Unix epoch (0 when it could not be read).
+    pub(crate) pairs: Vec<(FileItem, String, u64)>,
     /// Every non-ignored directory the walk visited, relative, ending with /
     pub(crate) dirs: Vec<String>,
     pub(crate) ignore_rules: Option<WalkIgnoreRules>,
@@ -69,12 +72,19 @@ impl WalkIgnoreRules {
     // sniffing on the input is now sufficient for external queries.
 }
 
+// Modification time in nanoseconds since the Unix epoch. An unreadable or
+// pre-epoch timestamp collapses to 0: the walk must never abort over it.
+pub(crate) fn mtime_ns(time: Option<SystemTime>) -> u64 {
+    time.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos().min(u64::MAX as u128) as u64)
+}
+
 #[cfg(test)]
 mod symlink_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::walk_collect_files;
+    use super::{mtime_ns, walk_collect_files};
     use std::fs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -99,7 +109,7 @@ mod tests {
         let out =
             walk_collect_files(root, true, false, 1, &counter, &Default::default(), None).unwrap();
 
-        let mut names: Vec<String> = out.pairs.into_iter().map(|(_, rel)| rel).collect();
+        let mut names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
         names.sort();
 
         assert!(names.contains(&"Cargo.toml".to_string()));
@@ -123,7 +133,7 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let out =
             walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
-        let names: Vec<String> = out.pairs.into_iter().map(|(_, rel)| rel).collect();
+        let names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
 
         assert!(names.iter().any(|n| n.ends_with("index.js")));
         assert!(!names.iter().any(|n| n.contains("node_modules")));
@@ -149,19 +159,19 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let out =
             walk_collect_files(&root, false, true, 1, &counter, &Default::default(), None).unwrap();
-        let mut names: Vec<String> = out.pairs.iter().map(|(_, rel)| rel.clone()).collect();
+        let mut names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
         names.sort();
 
         assert_eq!(names, ["linked/inner.toml", "projects.toml", "sesh.toml"]);
         assert_eq!(counter.load(Ordering::Relaxed), names.len());
 
-        let (item, rel) = out.pairs.iter().find(|(_, r)| r == "sesh.toml").unwrap();
+        let (item, rel, _) = out.pairs.iter().find(|(_, r, _)| r == "sesh.toml").unwrap();
         assert_eq!(item.size, 10);
         assert_eq!(&rel[item.filename_offset_in_relative_path()..], "sesh.toml");
 
         let out = walk_collect_files(&root, false, false, 1, &counter, &Default::default(), None)
             .unwrap();
-        let names: Vec<String> = out.pairs.into_iter().map(|(_, rel)| rel).collect();
+        let names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
         assert_eq!(names, ["projects.toml"]);
     }
 
@@ -232,7 +242,7 @@ mod tests {
             let counter = Arc::new(AtomicUsize::new(0));
             let out = walk_collect_files(base, true, false, 1, &counter, &Default::default(), None)
                 .unwrap();
-            let names: Vec<String> = out.pairs.iter().map(|(_, rel)| rel.clone()).collect();
+            let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
             assert!(names.iter().any(|n| n == "src/a.txt"), "{names:?}");
             assert!(
@@ -284,7 +294,7 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let out =
             walk_collect_files(root, true, false, 1, &counter, &Default::default(), None).unwrap();
-        let names: Vec<String> = out.pairs.iter().map(|(_, rel)| rel.clone()).collect();
+        let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
         assert!(names.iter().any(|n| n == "src/hit.ts"), "{names:?}");
         assert!(names.iter().any(|n| n == "keep.tmp"), "{names:?}");
@@ -338,7 +348,7 @@ mod tests {
                 .unwrap()
                 .pairs
                 .into_iter()
-                .map(|(_, rel)| rel)
+                .map(|(_, rel, _)| rel)
                 .collect()
         };
 
@@ -356,5 +366,49 @@ mod tests {
             !disabled.iter().any(|n| n.starts_with(".git/")),
             "{disabled:?}"
         );
+    }
+
+    // Two writes inside one second must stay distinguishable, so the identity
+    // keeps the full precision the file table drops. Windows rounds
+    // `SystemTime` to 100 ns, so the samples are 100 ns aligned.
+    #[test]
+    fn mtime_ns_keeps_sub_second_precision() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let first = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_100_000_100);
+        let second = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_900_000_300);
+
+        assert_eq!(mtime_ns(Some(first)), 1_700_000_000_100_000_100);
+        assert_eq!(mtime_ns(Some(second)), 1_700_000_000_900_000_300);
+        assert_ne!(mtime_ns(Some(first)), mtime_ns(Some(second)));
+        assert_eq!(mtime_ns(Some(first)) / 1_000_000_000, 1_700_000_000);
+    }
+
+    // An unreadable or pre-epoch mtime collapses to 0 instead of aborting.
+    #[test]
+    fn unreadable_mtime_is_zero() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        assert_eq!(mtime_ns(None), 0);
+        assert_eq!(mtime_ns(Some(UNIX_EPOCH - Duration::from_secs(1))), 0);
+    }
+
+    // Both backends must report the untruncated mtime, aligned with the pair.
+    #[test]
+    fn walker_reports_untruncated_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let out =
+            walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
+
+        assert_eq!(out.pairs.len(), 2);
+        for (_, rel, reported) in &out.pairs {
+            let on_disk = fs::metadata(root.join(rel)).unwrap().modified().ok();
+            assert_eq!(*reported, mtime_ns(on_disk), "{rel}");
+        }
     }
 }

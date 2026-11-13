@@ -875,7 +875,7 @@ fn index_new_directory(
     let files_to_add: Vec<PathBuf> = walk
         .pairs
         .iter()
-        .filter_map(|(_, path)| join_unless_ignored(path))
+        .filter_map(|(_, path, _)| join_unless_ignored(path))
         .collect();
 
     let subdirs: Vec<PathBuf> = walk

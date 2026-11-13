@@ -106,6 +106,10 @@ pub(crate) struct FileSync {
     files: StableVec<FileItem>,
     indexable_count: usize,
     base_count: usize,
+    /// Modification time in ns since the Unix epoch, aligned index-for-index
+    /// with `files[..base_count]`. The file table keeps whole seconds; the
+    /// content index needs the untruncated value (Snapshot identity).
+    mtime_ns: Arc<Vec<u64>>,
     /// Number of active present files that exists in the file system
     pub(crate) live_count: usize,
     /// Sorted directory table. `StableVec` so post-scan snapshots can keep
@@ -138,6 +142,7 @@ impl FileSync {
             files: StableVec::from_vec_with_reserve(Vec::new(), MAX_OVERFLOW_FILES),
             indexable_count: 0,
             base_count: 0,
+            mtime_ns: Arc::new(Vec::new()),
             live_count: 0,
             dirs: StableVec::from_vec_with_reserve(Vec::new(), MAX_OVERFLOW_FILES),
             base_dirs_count: 0,
@@ -1683,6 +1688,7 @@ impl FilePicker {
 
         Some(PostScanUnsafeSnapshot {
             files: self.sync_data.files.clone(),
+            mtime_ns: Arc::clone(&self.sync_data.mtime_ns),
             arena: self.sync_data.chunked_paths.as_ref().map(Arc::clone),
             base_count: self.sync_data.base_count,
             indexable_count: self.sync_data.indexable_count,
@@ -2225,6 +2231,8 @@ impl FileSlot {
 /// `ScanJob::run`, `scan_job_running == false` implies no live snapshot.
 pub(crate) struct PostScanUnsafeSnapshot {
     pub files: StableVec<FileItem>,
+    /// Nanosecond mtime per file, aligned with `files[..base_count]`.
+    pub mtime_ns: Arc<Vec<u64>>,
     pub arena: Option<Arc<crate::simd_path::ChunkedPathStore>>,
     // TODO figure this out
     pub _budget: Arc<crate::types::ContentCacheBudget>,
@@ -2340,7 +2348,7 @@ impl FileSync {
         BACKGROUND_THREAD_POOL.install(|| {
             rayon::join(
                 || {
-                    pairs.par_sort_unstable_by(|(a, path_a), (b, path_b)| {
+                    pairs.par_sort_unstable_by(|(a, path_a, _), (b, path_b, _)| {
                         // SAFETY: `filename_offset` is always at a character boundary
                         let (a_dir, a_file) = path_a.split_at(a.path.filename_offset as usize);
                         let (b_dir, b_file) = path_b.split_at(b.path.filename_offset as usize);
@@ -2356,13 +2364,16 @@ impl FileSync {
         let dirs = populates_dirs_files_chunked_storage(&mut pairs, &walked_dirs, &mut builder);
         drop(walked_dirs);
 
-        let mut files: Vec<FileItem> = pairs
-            .into_iter()
-            .map(|(file, _)| file)
+        let mut files: Vec<FileItem> = Vec::with_capacity(pairs.len());
+        let mut mtime_ns: Vec<u64> = Vec::with_capacity(pairs.len());
+        for (file, _, ns) in pairs {
             // Symlink-to-dir markers only contributed a DirItem; keep them out
             // of the file table so they don't appear as searchable files.
-            .filter(|f| !f.is_symlink_dir())
-            .collect();
+            if !file.is_symlink_dir() {
+                files.push(file);
+                mtime_ns.push(ns);
+            }
+        }
         let chunked_paths = builder.finish();
         let arena = chunked_paths.as_arena_ptr();
 
@@ -2442,6 +2453,7 @@ impl FileSync {
             files: StableVec::from_vec_with_reserve(files, MAX_OVERFLOW_FILES),
             indexable_count,
             base_count,
+            mtime_ns: Arc::new(mtime_ns),
             live_count: base_count,
             dirs: StableVec::from_vec_with_reserve(dirs, MAX_OVERFLOW_FILES),
             base_dirs_count,
@@ -2469,7 +2481,7 @@ impl FileSync {
 /// Returns the number of files added.
 fn expand_symlink_dir_pairs(
     base_path: &Path,
-    pairs: &mut Vec<(FileItem, String)>,
+    pairs: &mut Vec<(FileItem, String, u64)>,
     is_git_repo: bool,
     ignore_rules: Option<&crate::walk::WalkIgnoreRules>,
 ) -> usize {
@@ -2477,8 +2489,8 @@ fn expand_symlink_dir_pairs(
     // (borrowing pairs while mutating it below is not allowed).
     let markers: Vec<String> = pairs
         .iter()
-        .filter(|(item, _)| item.is_symlink_dir())
-        .map(|(_, rel)| rel.trim_end_matches('/').to_string())
+        .filter(|(item, _, _)| item.is_symlink_dir())
+        .map(|(_, rel, _)| rel.trim_end_matches('/').to_string())
         .collect();
 
     // Cycle guard: canonical real dirs already expanded (shared across all
@@ -2491,7 +2503,7 @@ fn expand_symlink_dir_pairs(
         // that supports it), files under "prefix/" exist — skip.
         let already_descended = pairs
             .iter()
-            .any(|(item, rel)| !item.is_symlink_dir() && rel.starts_with(&format!("{prefix}/")));
+            .any(|(item, rel, _)| !item.is_symlink_dir() && rel.starts_with(&format!("{prefix}/")));
         if already_descended {
             continue;
         }
@@ -2528,7 +2540,7 @@ fn expand_symlink_dir_into(
     is_git_repo: bool,
     ignore_rules: Option<&crate::walk::WalkIgnoreRules>,
     visited: &mut std::collections::HashSet<PathBuf>,
-    pairs: &mut Vec<(FileItem, String)>,
+    pairs: &mut Vec<(FileItem, String, u64)>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -2576,15 +2588,14 @@ fn expand_symlink_dir_into(
             }
             expand_symlink_dir_into(&path, &rel, is_git_repo, ignore_rules, visited, pairs);
         } else if meta.is_file() {
-            let modified = meta
-                .modified()
-                .ok()
+            let time = meta.modified().ok();
+            let modified = time
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                 .map_or(0, |d| d.as_secs());
             let is_binary = is_known_binary_extension(&path);
             let filename_offset = rel.rfind('/').map(|i| i + 1).unwrap_or(0) as u16;
             let item = FileItem::new_raw(filename_offset, meta.len(), modified, None, is_binary);
-            pairs.push((item, rel));
+            pairs.push((item, rel, crate::walk::mtime_ns(time)));
         }
     }
 }
@@ -2645,7 +2656,7 @@ pub(crate) fn warmup_mmaps(
 /// deduped), merging file parents in a single lockstep sweep so dirs with no
 /// files (empty subtrees, pure ancestors) are indexed and searchable too.
 fn populates_dirs_files_chunked_storage<'a>(
-    pairs: &'a mut [(FileItem, String)],
+    pairs: &'a mut [(FileItem, String, u64)],
     walked_dirs: &[String],
     chunk_storage: &mut crate::simd_path::ChunkedPathStoreBuilder,
 ) -> Vec<DirItem> {
@@ -2655,7 +2666,7 @@ fn populates_dirs_files_chunked_storage<'a>(
     // Root-level files sort first and their "" parent is never a walker dir.
     if pairs
         .first()
-        .is_some_and(|(f, _)| f.path.filename_offset == 0)
+        .is_some_and(|(f, _, _)| f.path.filename_offset == 0)
     {
         push_dir_item(&mut dirs, chunk_storage, "");
     }
@@ -2665,7 +2676,7 @@ fn populates_dirs_files_chunked_storage<'a>(
     let mut prev_dir: &'a str = "";
     let mut current_dir_idx: u32 = 0;
 
-    for (file, rel) in pairs.iter_mut() {
+    for (file, rel, _) in pairs.iter_mut() {
         let rel: &'a str = rel;
         let dir_part: &'a str = &rel[..file.path.filename_offset as usize];
 
@@ -3080,14 +3091,15 @@ mod tests {
 
     #[test]
     fn dir_table_merges_walked_dirs_with_file_parents() {
-        let mut pairs: Vec<(FileItem, String)> = ["src/main.rs", "src/deep/lib.rs", "root.txt"]
-            .iter()
-            .map(|p| {
-                let (item, rel) = FileItem::new(PathBuf::from(p), Path::new(""), None);
-                (item, rel)
-            })
-            .collect();
-        pairs.sort_by(|(a, pa), (b, pb)| {
+        let mut pairs: Vec<(FileItem, String, u64)> =
+            ["src/main.rs", "src/deep/lib.rs", "root.txt"]
+                .iter()
+                .map(|p| {
+                    let (item, rel) = FileItem::new(PathBuf::from(p), Path::new(""), None);
+                    (item, rel, 0)
+                })
+                .collect();
+        pairs.sort_by(|(a, pa, _), (b, pb, _)| {
             pa[..a.path.filename_offset as usize]
                 .cmp(&pb[..b.path.filename_offset as usize])
                 .then_with(|| pa.cmp(pb))
@@ -3110,7 +3122,7 @@ mod tests {
         assert_eq!(table, ["", "empty/", "src/", "src/deep/", "src/deeper/"]);
 
         // Every file's parent_dir_index points at its own dir entry.
-        for (file, _) in &pairs {
+        for (file, _, _) in &pairs {
             let dir = &dirs[file.parent_dir_index as usize];
             let rel = file.relative_path(arena);
             assert!(

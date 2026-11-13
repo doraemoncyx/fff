@@ -1,7 +1,7 @@
 use crate::file_picker::FilePickerIgnoreOptions;
 use crate::ignore::non_git_repo_overrides;
 use crate::types::FileItem;
-use crate::walk::WalkOutput;
+use crate::walk::{WalkOutput, mtime_ns};
 use crate::watch::is_git_file;
 use ignore::WalkBuilder;
 use std::path::Path;
@@ -40,7 +40,7 @@ pub(crate) fn walk_collect_files(
     // Single lock for both collections: every entry is either a file or a
     // dir, so this keeps one mutex acquisition per entry.
     let collected =
-        parking_lot::Mutex::new((Vec::<(FileItem, String)>::new(), Vec::<String>::new()));
+        parking_lot::Mutex::new((Vec::<(FileItem, String, u64)>::new(), Vec::<String>::new()));
     walker.run(|| {
         let collected = &collected;
         let counter = Arc::clone(synced_files_count);
@@ -80,11 +80,10 @@ pub(crate) fn walk_collect_files(
                     let offset = rel_dir.len() as u16;
                     let item = FileItem::new_raw(offset, 0, 0, None, false);
                     item.set_symlink_dir(true);
-                    collected.lock().0.push((item, rel_dir));
+                    collected.lock().0.push((item, rel_dir, 0));
                 } else {
-                    let modified = target
-                        .modified()
-                        .ok()
+                    let time = target.modified().ok();
+                    let modified = time
                         .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
                         .map_or(0, |d| d.as_secs());
                     let (file_item, _) = FileItem::new_from_walk_parts(
@@ -95,7 +94,10 @@ pub(crate) fn walk_collect_files(
                         modified,
                     );
                     file_item.set_symlink(true);
-                    collected.lock().0.push((file_item, rel_str));
+                    collected
+                        .lock()
+                        .0
+                        .push((file_item, rel_str, mtime_ns(time)));
                 }
                 counter.fetch_add(1, Ordering::Relaxed);
                 return ignore::WalkState::Continue;
@@ -109,10 +111,11 @@ pub(crate) fn walk_collect_files(
                 }
 
                 let metadata = entry.metadata().ok();
+                let modified_ns = mtime_ns(metadata.as_ref().and_then(|m| m.modified().ok()));
                 let (file_item, rel_path) =
                     FileItem::new_from_walk(path, &base_path, None, metadata.as_ref());
 
-                collected.lock().0.push((file_item, rel_path));
+                collected.lock().0.push((file_item, rel_path, modified_ns));
                 counter.fetch_add(1, Ordering::Relaxed);
             } else if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 let path = entry.path();
