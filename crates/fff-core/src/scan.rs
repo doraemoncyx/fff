@@ -553,6 +553,19 @@ mod tests {
         root: &std::path::Path,
         store: Option<&std::sync::Arc<SnapshotStore>>,
     ) -> (SharedFilePicker, BigramBuildStats) {
+        let result = scan_only(root, store);
+        // Writes are off the scan thread; a test reads them back immediately.
+        if let Some(store) = store {
+            assert!(store.flush(std::time::Duration::from_secs(60)));
+        }
+        result
+    }
+
+    // The scan itself, with the writes still in flight.
+    fn scan_only(
+        root: &std::path::Path,
+        store: Option<&std::sync::Arc<SnapshotStore>>,
+    ) -> (SharedFilePicker, BigramBuildStats) {
         let shared = SharedFilePicker::default();
         let picker = collected(root);
         let signals = picker.scan_signals();
@@ -571,10 +584,6 @@ mod tests {
         };
         let stats = ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
         drop(snapshot);
-        // Writes are off the scan thread; a test reads them back immediately.
-        if let Some(store) = store {
-            assert!(store.flush(std::time::Duration::from_secs(60)));
-        }
         (shared, stats)
     }
 
@@ -1319,5 +1328,259 @@ mod tests {
         assert_eq!(warm.row_hits, 4);
         assert_eq!(store.rows_written(), written, "not one row was rewritten");
         assert_eq!(store.logical_bytes(root.path()).unwrap(), bytes);
+    }
+
+    // A different derivation must throw the rows away, not serve them: a build
+    // with another fingerprint reads every file and answers like a cold scan.
+    #[test]
+    fn an_older_builds_fingerprint_discards_the_rows_and_reads_the_files_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (cold, cold_stats) = run_scan(root, Some(&store));
+        let baseline = matches(&cold, "marker");
+        assert_eq!(cold_stats.content_reads, 4);
+        drop(cold);
+
+        // What a build one derivation change older would have left behind.
+        let meta = store.read_meta(root).unwrap().expect("meta row");
+        store
+            .put_foreign_meta(root, meta.schema, meta.fingerprint ^ 1, &meta.root)
+            .unwrap();
+        assert!(!store.root_is_current(root), "the meta must look foreign");
+
+        let (warm, warm_stats) = run_scan(root, Some(&store));
+        assert_eq!(warm_stats.row_hits, 0, "no row may be served");
+        assert_eq!(warm_stats.row_misses, 4);
+        assert_eq!(warm_stats.content_reads, 4, "every file was read again");
+        assert_eq!(
+            matches(&warm, "marker"),
+            baseline,
+            "the answers must match a cold scan"
+        );
+        assert!(store.root_is_current(root), "the scan rewrites the meta");
+
+        let (third, third_stats) = run_scan(root, Some(&store));
+        assert_eq!(third_stats.row_hits, 4, "the rewritten meta is current");
+        assert_eq!(third_stats.content_reads, 0);
+        assert_eq!(matches(&third, "marker"), baseline);
+    }
+
+    // The same tree scanned by a process that then dies: a second process reads
+    // the rows that reached disk. A second store in this process proves nothing.
+    #[test]
+    fn a_killed_process_leaves_rows_the_next_scan_serves() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let handshake = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let db = db.path().join("snapshot-db");
+        fixture(root);
+
+        let ready = handshake.path().join("worker-ready");
+        let mut child = spawn_worker("die", root, &db, &[(PROCESS_READY_FILE, &ready)]);
+        // The child signals only after its own reader sees the meta row, which
+        // the writer queues behind every row: the kill cannot cut a write short.
+        wait_for_path(&ready, WORKER_TIMEOUT);
+        let status = child.kill_and_reap();
+        assert!(!status.success(), "the worker ended on its own: {status}");
+
+        let store = std::sync::Arc::new(SnapshotStore::open(&db).unwrap());
+        let (shared, warm) = run_scan(root, Some(&store));
+
+        assert!(
+            warm.row_hits > 0,
+            "the killed process left nothing to serve"
+        );
+        assert_eq!(warm.row_hits, 4);
+        assert_eq!(warm.row_misses, 0);
+        assert_eq!(warm.content_reads, 0, "a hit must not read a file");
+        assert_eq!(matches(&shared, "marker").len(), 3);
+    }
+
+    // Two processes, one Root, one environment: both scans finish and the rows
+    // they leave behind are readable, complete and still match the files.
+    #[test]
+    fn two_processes_indexing_one_root_leave_a_readable_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let handshake = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let db = db.path().join("snapshot-db");
+        let files = bulk_fixture(root, 1500);
+
+        let start = handshake.path().join("start");
+        let left_ready = handshake.path().join("left-ready");
+        let right_ready = handshake.path().join("right-ready");
+        let mut left = spawn_worker(
+            "scan",
+            root,
+            &db,
+            &[
+                (PROCESS_READY_FILE, &left_ready),
+                (PROCESS_START_FILE, &start),
+            ],
+        );
+        let mut right = spawn_worker(
+            "scan",
+            root,
+            &db,
+            &[
+                (PROCESS_READY_FILE, &right_ready),
+                (PROCESS_START_FILE, &start),
+            ],
+        );
+
+        // A barrier, so the two content passes really are in flight together.
+        wait_for_path(&left_ready, WORKER_TIMEOUT);
+        wait_for_path(&right_ready, WORKER_TIMEOUT);
+        std::fs::write(&start, b"go").unwrap();
+        left.reaped_ok();
+        right.reaped_ok();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(&db).unwrap());
+        let meta = store.read_meta(root).unwrap().expect("a meta row");
+        assert_eq!(
+            store.row_count(root).unwrap(),
+            files as u64,
+            "one row per file"
+        );
+        assert_eq!(meta.logical_bytes, store.logical_bytes(root).unwrap());
+
+        // Every row the next scan asks for is present, decodable and unchanged.
+        let (shared, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.row_hits, files as u64);
+        assert_eq!(
+            warm.row_misses, 0,
+            "a surviving row was unreadable or stale"
+        );
+        assert_eq!(warm.content_reads, 0);
+        let found = matches(&shared, "unique_bulk_marker");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.ends_with("f00000.txt"), "{found:?}");
+    }
+
+    // Not a test of its own: the child entry point. The parent re-runs this test
+    // binary with --exact and the variables below.
+    #[test]
+    fn snapshot_process_worker() {
+        let Ok(mode) = std::env::var(PROCESS_MODE) else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var(PROCESS_ROOT).expect("worker root"));
+        let db = PathBuf::from(std::env::var(PROCESS_DB).expect("worker db"));
+
+        if mode == "scan" {
+            if let Ok(ready) = std::env::var(PROCESS_READY_FILE) {
+                std::fs::write(ready, b"ready").unwrap();
+            }
+            if let Ok(start) = std::env::var(PROCESS_START_FILE) {
+                wait_for_path(std::path::Path::new(&start), WORKER_TIMEOUT);
+            }
+        }
+
+        let store = std::sync::Arc::new(SnapshotStore::open(&db).expect("child store"));
+        let (_shared, _stats) = scan_only(&root, Some(&store));
+
+        if mode == "die" {
+            // Rows first, meta last: seeing our own meta means both are on disk.
+            wait_for_meta(&store, &root, WORKER_TIMEOUT);
+            let ready = std::env::var(PROCESS_READY_FILE).expect("ready file");
+            std::fs::write(ready, b"ready").unwrap();
+            // The parent kills us here. Nothing below ever runs.
+            std::thread::sleep(WORKER_TIMEOUT);
+        }
+    }
+
+    const WORKER_NAME: &str = "scan::tests::snapshot_process_worker";
+    const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    const PROCESS_MODE: &str = "FFF_SNAPSHOT_PROCESS_MODE";
+    const PROCESS_ROOT: &str = "FFF_SNAPSHOT_PROCESS_ROOT";
+    const PROCESS_DB: &str = "FFF_SNAPSHOT_PROCESS_DB";
+    const PROCESS_READY_FILE: &str = "FFF_SNAPSHOT_PROCESS_READY_FILE";
+    const PROCESS_START_FILE: &str = "FFF_SNAPSHOT_PROCESS_START_FILE";
+
+    // Kills on drop, so a failed assertion never leaks a worker process.
+    struct Worker(std::process::Child);
+
+    impl Worker {
+        fn kill_and_reap(&mut self) -> std::process::ExitStatus {
+            let _ = self.0.kill();
+            self.0.wait().expect("reap a worker")
+        }
+
+        fn reaped_ok(&mut self) {
+            let status = self.0.wait().expect("reap a worker");
+            assert!(status.success(), "a worker process failed: {status}");
+        }
+    }
+
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // A real second OS process: the test binary, run again for one named test.
+    fn spawn_worker(
+        mode: &str,
+        root: &std::path::Path,
+        db: &std::path::Path,
+        handshake: &[(&str, &std::path::Path)],
+    ) -> Worker {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("the test binary"));
+        command
+            .args(["--exact", WORKER_NAME, "--nocapture", "--test-threads=1"])
+            .env(PROCESS_MODE, mode)
+            .env(PROCESS_ROOT, root)
+            .env(PROCESS_DB, db)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null());
+        for (name, path) in handshake {
+            command.env(name, path);
+        }
+        Worker(command.spawn().expect("spawn a worker process"))
+    }
+
+    fn wait_for_path(path: &std::path::Path, timeout: std::time::Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("{} never appeared", path.display());
+    }
+
+    fn wait_for_meta(store: &SnapshotStore, root: &std::path::Path, timeout: std::time::Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if store.read_meta(root).unwrap().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("no meta row for {}", root.display());
+    }
+
+    // Enough files that two scans released together must overlap.
+    fn bulk_fixture(root: &std::path::Path, files: usize) -> usize {
+        let body = format!("bulk_marker line_0\n{}\n", "x".repeat(1400));
+        for index in 0..files {
+            let dir = root.join(format!("d{:02}", index % 32));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut text = body.clone();
+            if index == 0 {
+                text.push_str("unique_bulk_marker\n");
+            }
+            std::fs::write(dir.join(format!("f{index:05}.txt")), &text).unwrap();
+        }
+        files
     }
 }
