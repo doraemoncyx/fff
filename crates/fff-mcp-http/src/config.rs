@@ -33,6 +33,8 @@ pub struct Config {
     pub evict_interval: Duration,
     pub watch: bool,
     pub follow_symlinks: bool,
+    /// Build the bigram content index after the initial scan; grep's prefilter.
+    pub content_indexing: bool,
     pub frecency_db: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub log_level: Option<String>,
@@ -58,6 +60,7 @@ impl Default for Config {
             evict_interval: Duration::from_secs(DEFAULT_EVICT_INTERVAL_SECS),
             watch: true,
             follow_symlinks: false,
+            content_indexing: true,
             frecency_db: None,
             log_file: None,
             log_level: None,
@@ -162,6 +165,7 @@ struct ConfigFile {
     evict_interval_secs: Option<u64>,
     no_watch: Option<bool>,
     follow_symlinks: Option<bool>,
+    content_indexing: Option<bool>,
     frecency_db: Option<PathBuf>,
     log_file: Option<PathBuf>,
     log_level: Option<String>,
@@ -206,6 +210,9 @@ impl ConfigFile {
         }
         if let Some(follow) = self.follow_symlinks {
             config.follow_symlinks = follow;
+        }
+        if let Some(indexing) = self.content_indexing {
+            config.content_indexing = indexing;
         }
         if let Some(path) = self.frecency_db {
             config.frecency_db = Some(path);
@@ -373,6 +380,16 @@ mod tests {
             extended.resolved_allowed_hosts(),
             vec!["localhost", "127.0.0.1", "::1", "example.test"]
         );
+    }
+
+    #[test]
+    fn config_file_sets_content_indexing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("indexing.toml");
+        std::fs::write(&path, "content_indexing = false\n").unwrap();
+        let config = Config::from_file(&path).unwrap();
+        assert!(!config.content_indexing);
+        assert!(Config::default().content_indexing);
     }
 
     #[test]

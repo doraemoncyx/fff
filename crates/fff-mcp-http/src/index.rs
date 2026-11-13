@@ -19,10 +19,17 @@ pub(crate) struct Index {
     scan_announced: AtomicBool,
 }
 
+// Bigram columns are one bit per file; 5000 columns of printable pairs.
+const BIGRAM_BYTES_PER_FILE: usize = 625;
+
 pub(crate) struct IndexProgress {
     pub files: usize,
     pub dirs: usize,
     pub scanning: bool,
+    /// The walk finished but the content index is still being built.
+    pub indexing: bool,
+    /// The bigram prefilter is installed, so grep can skip files.
+    pub prefilter: bool,
     pub scanned: usize,
 }
 
@@ -43,7 +50,7 @@ impl Index {
                 watch: config.watch,
                 follow_symlinks: config.follow_symlinks,
                 enable_mmap_cache: false,
-                enable_content_indexing: false,
+                enable_content_indexing: config.content_indexing,
                 ..Default::default()
             },
             ignore.clone(),
@@ -93,6 +100,8 @@ impl Index {
                 files: 0,
                 dirs: 0,
                 scanning: true,
+                indexing: false,
+                prefilter: false,
                 scanned: 0,
             };
         };
@@ -101,13 +110,20 @@ impl Index {
             files: picker.live_file_count(),
             dirs: picker.get_dirs().len(),
             scanning: scan.is_scanning,
+            indexing: !scan.is_warmup_complete,
+            prefilter: picker.bigram_index().is_some(),
             scanned: scan.scanned_files_count,
         }
     }
 
-    /// Block until the initial walk finishes. Partial when the deadline wins.
+    // Block until the initial walk finishes. Partial when the deadline wins.
     pub fn wait_for_scan(&self, timeout: Duration) -> bool {
         self.picker.wait_for_scan(timeout)
+    }
+
+    // Block until the walk and the post-scan content index are both done.
+    pub fn wait_for_ready(&self, timeout: Duration) -> bool {
+        self.picker.wait_for_indexing_complete(timeout)
     }
 
     pub fn stop(&self) {
@@ -138,10 +154,15 @@ impl Index {
         first
     }
 
-    /// Rough per-index footprint for `/stats`; the eviction decision uses RSS.
+    // Rough per-index footprint for `/stats`; the eviction decision uses RSS.
     pub fn estimated_bytes(&self) -> usize {
         let progress = self.progress();
         let per_file = std::mem::size_of::<fff::types::FileItem>() + 96;
-        progress.files * per_file + progress.dirs * 64
+        let prefilter = if progress.prefilter {
+            progress.files * BIGRAM_BYTES_PER_FILE
+        } else {
+            0
+        };
+        progress.files * per_file + progress.dirs * 64 + prefilter
     }
 }

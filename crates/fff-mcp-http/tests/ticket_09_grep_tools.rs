@@ -472,9 +472,14 @@ fn a_zero_scan_wait_answers_partially_and_then_completes() {
 
     let mut scanning = true;
     for _ in 0..400 {
-        let response = server.search_json(&[("querystr", ""), ("tardir", &tardir)]);
-        scanning = response["scanning"].as_bool().unwrap_or(false);
-        if !scanning {
+        let stats = server.stats();
+        let busy = stats["indexes"].as_array().is_some_and(|indexes| {
+            indexes
+                .iter()
+                .any(|index| index["scanning"] == true || index["indexing"] == true)
+        });
+        scanning = busy;
+        if !busy {
             break;
         }
         std::thread::sleep(Duration::from_millis(25));

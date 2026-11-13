@@ -66,6 +66,7 @@ pub(crate) fn grep(registry: &Registry, mut params: GrepParams) -> Result<GrepTe
             label.as_deref(),
             &params,
             mode,
+            selection.ready,
         )
     })
 }
@@ -82,6 +83,7 @@ pub(crate) fn multi_grep(
             picker,
             &selection.prefix,
             &params,
+            selection.ready,
         )
     })
 }
@@ -91,6 +93,8 @@ struct Selection {
     // tardir relative to the Index's Root; empty when the Root is the tardir.
     prefix: String,
     scanning: bool,
+    // Walk and content indexing both finished, so pages stay coherent.
+    ready: bool,
     scanned: usize,
 }
 
@@ -124,13 +128,15 @@ fn select(registry: &Registry, tardir: &Path) -> Result<Option<Selection>, ApiEr
     };
 
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let complete = index.wait_for_scan(remaining);
+    // Paging needs a stable candidate set, so wait for the content index too.
+    let ready = index.wait_for_ready(remaining);
     registry.subsume_finished();
     registry.touch(&index);
     let progress = index.progress();
     Ok(Some(Selection {
         prefix,
-        scanning: !complete,
+        scanning: !ready,
+        ready,
         scanned: progress.files.max(progress.scanned),
         index,
     }))
@@ -183,6 +189,7 @@ fn perform_grep(
     label: Option<&str>,
     params: &GrepParams,
     mode: GrepMode,
+    pageable: bool,
 ) -> Result<String, ApiError> {
     let query = params.query.as_str();
     let default_page = if params.definitions_only {
@@ -451,6 +458,7 @@ fn perform_grep(
                             auto_expand_defs: auto_expand,
                             picker,
                             root: root_key,
+                            pageable: false,
                         }
                         .format(cs)
                     });
@@ -605,6 +613,7 @@ fn perform_grep(
             auto_expand_defs: auto_expand,
             picker,
             root: root_key,
+            pageable,
         }
         .format(cs)
     });
@@ -625,6 +634,7 @@ fn multi_grep_inner(
     picker: &fff::FilePicker,
     prefix: &str,
     params: &MultiGrepParams,
+    pageable: bool,
 ) -> Result<String, ApiError> {
     let max_results = normalize_max_results(params.max_results, 20).min(MAX_GREP_PAGE);
     let context = normalize_context(params.context);
@@ -711,6 +721,7 @@ fn multi_grep_inner(
             auto_expand_defs: auto_expand,
             picker,
             root: root_key,
+            pageable,
         }
         .format(cs)
     });
@@ -864,6 +875,7 @@ fn format_broader_matches(
         auto_expand_defs: context.is_none(),
         picker,
         root: "",
+        pageable: false,
     }
     .format(&mut CursorStore::new());
     format!("{notice}\n{text}\nSuggestions are limited; search a suggested path for more matches.")

@@ -10,6 +10,8 @@ pub struct StatsResponse {
     pub scans_started: u64,
     pub scans_in_flight: usize,
     pub peak_scans_in_flight: usize,
+    /// Whether Indexes build the bigram content index used as grep's prefilter.
+    pub content_indexing: bool,
     pub indexes: Vec<IndexStats>,
 }
 
@@ -19,6 +21,10 @@ pub struct IndexStats {
     pub files: usize,
     pub dirs: usize,
     pub scanning: bool,
+    /// The walk is done but the content index is still building.
+    pub indexing: bool,
+    /// The bigram prefilter is installed for this Index.
+    pub prefilter: bool,
     pub last_used: u64,
     pub estimated_bytes: usize,
 }
@@ -34,6 +40,8 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
                 files: progress.files,
                 dirs: progress.dirs,
                 scanning: progress.scanning,
+                indexing: progress.indexing,
+                prefilter: progress.prefilter,
                 last_used: index.last_used(),
                 estimated_bytes: index.estimated_bytes(),
             }
@@ -47,6 +55,7 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
         scans_started: registry.scans_started(),
         scans_in_flight: registry.scans_in_flight(),
         peak_scans_in_flight: registry.peak_scans_in_flight(),
+        content_indexing: registry.config().content_indexing,
         indexes,
     }
 }

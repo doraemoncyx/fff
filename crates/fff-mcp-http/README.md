@@ -115,9 +115,33 @@ least recently requested Root is dropped, at most three per round, never one
 serving the current request, and never the last one. A single Root larger than
 the whole budget is kept with a warning rather than thrashing.
 
-`/stats` reports `used_bytes`, `budget_bytes`, and per-Index
-`root`/`files`/`dirs`/`scanning`/`last_used`/`estimated_bytes`, ordered by
-least recently used.
+`/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`, and per-Index
+`root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
+`estimated_bytes`, ordered by least recently used.
+
+## Content index
+
+`--content-indexing` (default on, same as the stdio `fff-mcp` server) builds a
+bigram filter per Index after its walk finishes: the set of printable byte pairs
+each file contains, one bit per file per pair. `grep` and `multi_grep` use it to
+skip files that cannot contain the pattern, which is most of a large tree.
+
+Cost, in exchange:
+
+- Roughly 0.6 KB per indexed file per Root (5000 bit columns), on top of the
+  file list. It counts against `--max-memory`, so a multi-Root service reaches
+  the eviction threshold sooner — that is the budget doing its job.
+- The build reads every file up to 2 MB once, in the background after the walk.
+  Until it finishes `grep` still works (it just reads every file), and `/stats`
+  reports `indexing: true`; `prefilter: true` marks the point where the prefilter
+  is installed. A request never waits for it.
+- With `--no-watch` the filter is only as fresh as the initial scan, so edits
+  made afterwards can be missed by the prefilter. The same is true whenever a
+  filesystem event never reaches the watcher (it can happen under very heavy
+  load). Use `--no-content-indexing` when grep must always read current bytes.
+
+`--no-content-indexing` drops the filter: less RAM, no background read pass,
+slower grep on big trees.
 
 ## Scans
 
@@ -166,6 +190,7 @@ max_concurrent_scans = 2
 evict_interval_secs = 30
 no_watch = false
 follow_symlinks = false
+content_indexing = true
 frecency_db = "C:/Users/me/AppData/Local/fff/frecency"
 log_file = "C:/Users/me/AppData/Local/fff/fff_mcp_http.log"
 log_level = "info"
@@ -190,12 +215,11 @@ own `<stem>+<timestamp>+<pid>.log` under `%LOCALAPPDATA%\fff\` (or
   ranks against each Root's own base path, and rescoring by tardir-relative
   path is not exposed. This only affects path-shape queries during the window
   where a parent is still scanning.
-- Content search has no bigram prefilter: `grep` and `multi_grep` always read
-  the files themselves, so latency grows with the size of the tree, and the
-  first call on a new tardir waits for the scan (or answers partially after
-  `--scan-wait-secs`). Content indexing stays off because this service is
-  memory-bound.
-- No index persistence: a restart rescans.
+- A parent `grep` waits for the parent's own walk, so child Roots below it are
+  not merged into a content page (paging needs one coherent file list). The
+  first call on a new tardir waits for the scan, or answers partially after
+  `--scan-wait-secs`.
+- No index persistence: a restart rescans and rebuilds the content index.
 
 ## Building
 

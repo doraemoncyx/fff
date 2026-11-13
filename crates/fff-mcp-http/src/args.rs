@@ -52,6 +52,14 @@ pub struct Args {
     #[arg(long)]
     pub follow_symlinks: bool,
 
+    // Build the bigram content index after each scan; grep's prefilter (default on).
+    #[arg(long)]
+    pub content_indexing: bool,
+
+    // Skip the content index: grep reads every indexed file, using less RAM.
+    #[arg(long, conflicts_with = "content_indexing")]
+    pub no_content_indexing: bool,
+
     // Frecency database path. Disabled when omitted.
     #[arg(long)]
     pub frecency_db: Option<PathBuf>,
@@ -127,6 +135,12 @@ impl Args {
         }
         if self.follow_symlinks {
             config.follow_symlinks = true;
+        }
+        if self.content_indexing {
+            config.content_indexing = true;
+        }
+        if self.no_content_indexing {
+            config.content_indexing = false;
         }
         if let Some(path) = self.frecency_db {
             config.frecency_db = Some(path);
@@ -251,5 +265,31 @@ mod tests {
         assert!(!config.default_skips);
         assert!(config.disable_git);
         assert!(config.disable_ignore_files);
+    }
+
+    #[test]
+    fn content_indexing_is_on_unless_the_flag_says_otherwise() {
+        let default = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert!(default.content_indexing);
+
+        let off = Args::parse_from(["fff-mcp-http", "--no-content-indexing"])
+            .into_config()
+            .unwrap();
+        assert!(!off.content_indexing);
+
+        let forced = Args::parse_from(["fff-mcp-http", "--content-indexing"])
+            .into_config()
+            .unwrap();
+        assert!(forced.content_indexing);
+    }
+
+    #[test]
+    fn the_two_content_indexing_flags_conflict() {
+        let parsed = Args::try_parse_from([
+            "fff-mcp-http",
+            "--content-indexing",
+            "--no-content-indexing",
+        ]);
+        assert!(parsed.is_err(), "both flags must be rejected");
     }
 }

@@ -154,6 +154,8 @@ pub(crate) struct GrepFormatter<'a> {
     pub auto_expand_defs: bool,
     pub picker: &'a FilePicker,
     pub root: &'a str,
+    // False while the candidate set can still change, so paging cannot drift.
+    pub pageable: bool,
 }
 
 impl GrepFormatter<'_> {
@@ -169,6 +171,7 @@ impl GrepFormatter<'_> {
             auto_expand_defs,
             picker,
             root,
+            pageable,
         } = *self;
 
         let items = if matches.len() > max_results {
@@ -186,11 +189,12 @@ impl GrepFormatter<'_> {
                 cursor_store,
                 picker,
                 root,
+                pageable,
             );
         }
 
         if output_mode == OutputMode::Count {
-            return format_count(items, files, cursor, cursor_store, picker, root);
+            return format_count(items, files, cursor, cursor_store, picker, root, pageable);
         }
         if show_context
             && let Some(text) =
@@ -332,7 +336,7 @@ impl GrepFormatter<'_> {
             lines.insert(usize::from(total_matched > items.len()), note);
         }
 
-        if cursor.has_more() {
+        if pageable && cursor.has_more() {
             let cursor_id = cursor_store.store_grep(root, cursor);
             lines.push(format!("\ncursor: {}", cursor_id));
         }
@@ -405,7 +409,7 @@ impl GrepFormatter<'_> {
             lines.push(format!(" {line}{} {text}", if matched { ':' } else { '-' }));
             previous = Some((file_index, line));
         }
-        if self.cursor.has_more() {
+        if self.pageable && self.cursor.has_more() {
             let id = cursor_store.store_grep(self.root, self.cursor);
             lines.push(format!("\ncursor: {id}"));
         }
@@ -413,6 +417,7 @@ impl GrepFormatter<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_files_with_matches(
     items: &[GrepMatch],
     files: &[&FileItem],
@@ -421,6 +426,7 @@ fn format_files_with_matches(
     cursor_store: &mut CursorStore,
     picker: &FilePicker,
     root: &str,
+    pageable: bool,
 ) -> String {
     let file_map = collect_file_preview(items, files, picker);
 
@@ -486,7 +492,7 @@ fn format_files_with_matches(
         }
     }
 
-    if cursor.has_more() {
+    if pageable && cursor.has_more() {
         let cursor_id = cursor_store.store_grep(root, cursor);
         lines.push(format!("\ncursor: {}", cursor_id));
     }
@@ -501,6 +507,7 @@ fn format_count(
     cursor_store: &mut CursorStore,
     picker: &FilePicker,
     root: &str,
+    pageable: bool,
 ) -> String {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -518,7 +525,7 @@ fn format_count(
     for path in &order {
         lines.push(format!("{}: {}", path, counts[path.as_str()]));
     }
-    if cursor.has_more() {
+    if pageable && cursor.has_more() {
         let cursor_id = cursor_store.store_grep(root, cursor);
         lines.push(format!("\ncursor: {}", cursor_id));
     }
