@@ -184,11 +184,12 @@ that read files exactly as they did before the feature existed. No error reaches
 the request. A latched-off Snapshot is silent afterwards, never one warning per
 file.
 
-An environment that will not open is recreated only when its directory holds
-nothing but LMDB's own `data.mdb` and `lock.mdb`; a directory holding anything
-else is never touched. This is the one guard between a mistyped `--snapshot-db`
-and someone's data, so a corrupt environment found next to other files is left
-alone and the Snapshot stays off.
+An environment that will not open is recreated only when its directory carries
+the store's own `.fff-snapshot` marker; an unmarked directory is never touched,
+and `--snapshot-reset` obeys the same rule. This is the one guard between a
+mistyped `--snapshot-db` and someone's data: two LMDB environments are
+indistinguishable by content, so a content test cannot tell a corrupt Snapshot
+from the frecency database living at the wrong path.
 
 `/stats` gains a `snapshot` object once a store is open:
 

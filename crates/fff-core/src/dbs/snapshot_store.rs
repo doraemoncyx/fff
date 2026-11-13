@@ -69,6 +69,11 @@ impl LmdbStore for SnapshotStore {
     }
 }
 
+// A directory is ours only if it carries this marker, which the store writes on
+// first open. Without it a non-empty directory belongs to someone else — and
+// the frecency environment looks exactly like an unmarked snapshot one.
+pub const OWNER_MARKER: &str = ".fff-snapshot";
+
 impl SnapshotStore {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_budget(path, u64::MAX)
@@ -76,6 +81,7 @@ impl SnapshotStore {
 
     // `budget_bytes` caps the sum of every Root's rows; `u64::MAX` keeps them all.
     pub fn open_with_budget(path: &Path, budget_bytes: u64) -> Result<Self> {
+        claim_directory(path)?;
         let (env, health) = Self::open_env(path)?;
         let db: Database<Bytes, Bytes> = Self::open_database_safe(&env, None)?;
         let budget = Arc::new(SnapshotBudget::new(budget_bytes));
@@ -520,6 +526,27 @@ pub(crate) fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+// An absent or empty directory becomes ours; a marked one already is; anything
+// else is left untouched, because LMDB stores are indistinguishable by content
+// and the frecency one would otherwise be adopted and rewritten.
+fn claim_directory(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(Error::CreateDir)?;
+    let marker = path.join(OWNER_MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let empty = std::fs::read_dir(path)
+        .map_err(Error::CreateDir)?
+        .next()
+        .is_none();
+    if !empty {
+        return Err(Error::ForeignSnapshotDir(path.to_path_buf()));
+    }
+
+    std::fs::write(&marker, b"fff snapshot store\n").map_err(Error::CreateDir)
 }
 
 #[cfg(test)]

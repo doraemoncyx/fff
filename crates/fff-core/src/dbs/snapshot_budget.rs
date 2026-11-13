@@ -10,7 +10,7 @@ use super::snapshot_store::{KEY_LEN, KIND_META, ROOT_PREFIX_LEN, SnapshotMeta, S
 use crate::error::{Error, Result};
 use crate::lmdb::LmdbStore;
 
-/// A Root unused for this long is deleted by the next budget pass.
+// A Root unused for this long is deleted by the next budget pass.
 pub(crate) const ROOT_MAX_AGE_SECS: u64 = 14 * 24 * 60 * 60;
 
 #[derive(Clone, Copy)]
@@ -19,8 +19,8 @@ struct RootRecord {
     logical_bytes: u64,
 }
 
-/// The Roots this process knows about, so a commit never walks the environment
-/// to find out how much it holds.
+// The Roots this process knows about, so a commit never walks the environment
+// to find out how much it holds.
 pub(crate) struct SnapshotBudget {
     bytes: u64,
     roots: Mutex<HashMap<[u8; ROOT_PREFIX_LEN], RootRecord>>,

@@ -28,6 +28,8 @@ pub enum Error {
     },
     #[error("Something is wrong with the local db instance: {0}")]
     GenericDbError(#[from] heed::Error),
+    #[error("{0} is not a snapshot directory; refusing to use it")]
+    ForeignSnapshotDir(std::path::PathBuf),
     #[error("Failed to open {db} database env: {source}")]
     EnvOpen {
         db: &'static str,

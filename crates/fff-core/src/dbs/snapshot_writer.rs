@@ -13,11 +13,8 @@ use super::snapshot_ops;
 use super::snapshot_state::SnapshotState;
 use super::snapshot_store::{ROOT_PREFIX_LEN, SnapshotMeta};
 
-// Pending work the writer may hold before the oldest row batch is dropped.
-// A cold scan of a large tree produces more batches than this (137k files is
-// ~68 of 2000 rows), so the cap is a backstop, not a guarantee: a scan bigger
-// than the queue relies on the writer keeping up, and a dropped batch is a
-// handful of misses on the next scan.
+// The cap is a backstop, not a guarantee: a large tree queues more batches than
+// this, so a scan bigger than the queue relies on the writer keeping up.
 const MAX_QUEUED_BATCHES: usize = 32;
 const MAX_QUEUED_BYTES: u64 = 64 * 1024 * 1024;
 // Teardown waits this long for the queue, then lets the thread go.
@@ -252,12 +249,13 @@ fn run(
         }
         match apply(&job, &counters, &env, &db, &budget) {
             Err(error) => state.disable(&error),
-            Ok(()) if !matches!(job, WriteJob::Housekeep) => {
+            // Every applied job re-checks the budget: a commit changes the
+            // total, and Housekeep is how the startup pass gets to run at all.
+            Ok(()) => {
                 if let Err(error) = snapshot_ops::enforce_limits(&env, &db, &budget) {
                     state.disable(&error);
                 }
             }
-            Ok(()) => {}
         }
         settle(&shared);
     }

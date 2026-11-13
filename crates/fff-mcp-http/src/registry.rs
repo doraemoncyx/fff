@@ -474,19 +474,11 @@ fn open_snapshot(config: &Config) -> Option<Arc<SnapshotStore>> {
     }
 }
 
-// The only thing between a mistyped --snapshot-db and someone's data: a
-// directory is recreated only when it holds nothing but LMDB's own files, since
-// a corrupt environment and a foreign one are indistinguishable before opening.
+// Only a directory the store itself marked is ours to recreate. Content alone
+// cannot tell two LMDB environments apart, and the frecency one would look
+// exactly like a corrupt snapshot.
 fn our_environment(path: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).all(|entry| {
-        matches!(
-            entry.file_name().to_str(),
-            Some("data.mdb") | Some("lock.mdb")
-        )
-    })
+    path.join(fff::OWNER_MARKER).exists()
 }
 
 fn recreate(path: &Path, budget: u64) -> Result<Arc<SnapshotStore>, String> {
@@ -501,8 +493,19 @@ fn recreate(path: &Path, budget: u64) -> Result<Arc<SnapshotStore>, String> {
         .map_err(|error| error.to_string())
 }
 
-// Only the env's own files are ours; never wipe a directory we were pointed at.
+// Only a directory the store itself marked is ours to empty. An unmarked one
+// may be another database that happens to live at the path we were handed.
 fn reset_snapshot_files(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    if !our_environment(path) {
+        tracing::warn!(
+            path = %path.display(),
+            "not a snapshot directory; --snapshot-reset left it alone"
+        );
+        return;
+    }
     for name in ["data.mdb", "lock.mdb"] {
         let file = path.join(name);
         if !file.exists() {

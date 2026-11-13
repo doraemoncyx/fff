@@ -122,14 +122,19 @@ fn wait_for_meta(path: &Path, root: &Path) -> SnapshotMeta {
     }
 }
 
-// A directory holding only data.mdb and lock.mdb is ours to recreate: the
-// "spec mismatch" and "corrupt environment" cases are the same one here.
+// A marked directory whose environment will not open is ours to recreate: the
+// "spec mismatch" and "corrupt environment" cases meet here.
 #[test]
-fn an_environment_holding_only_lmdb_files_is_recreated() {
+fn a_marked_environment_that_will_not_open_is_recreated() {
     let root = tree();
     let db = tempfile::tempdir().unwrap();
     let snapshot_dir = db.path().join("snapshot-db");
     std::fs::create_dir_all(&snapshot_dir).unwrap();
+    std::fs::write(
+        snapshot_dir.join(fff::OWNER_MARKER),
+        b"fff snapshot store\n",
+    )
+    .unwrap();
     std::fs::write(snapshot_dir.join("data.mdb"), b"not an lmdb environment").unwrap();
     std::fs::write(snapshot_dir.join("lock.mdb"), b"nor is this").unwrap();
 
@@ -142,6 +147,41 @@ fn an_environment_holding_only_lmdb_files_is_recreated() {
     let meta = wait_for_meta(&snapshot_dir, root.path());
     assert_eq!(meta.schema, SNAPSHOT_SCHEMA);
     assert!(meta.logical_bytes > 0, "{meta:?}");
+}
+
+// A directory carrying an LMDB environment but no marker is someone else's.
+// The frecency store is exactly this shape, so adopting it would delete a
+// database that has nothing to do with the Snapshot.
+#[test]
+fn an_unmarked_environment_is_never_adopted_or_deleted() {
+    let root = tree();
+    let db = tempfile::tempdir().unwrap();
+    let snapshot_dir = db.path().join("snapshot-db");
+    std::fs::create_dir_all(&snapshot_dir).unwrap();
+    std::fs::write(snapshot_dir.join("data.mdb"), b"frecency rows").unwrap();
+    std::fs::write(snapshot_dir.join("lock.mdb"), b"a lock").unwrap();
+
+    let server = TestServer::start(snapshot_config(&snapshot_dir));
+    let response = search(&server, root.path());
+    assert!(
+        response["results"]
+            .as_array()
+            .is_some_and(|results| !results.is_empty()),
+        "{response}"
+    );
+    wait_for_indexing(&server, root.path());
+
+    assert!(
+        server.stats()["snapshot"].is_null(),
+        "the snapshot must stay off: {}",
+        server.stats()
+    );
+    assert_eq!(
+        std::fs::read(snapshot_dir.join("data.mdb")).unwrap(),
+        b"frecency rows",
+        "another database's data was overwritten"
+    );
+    assert!(!snapshot_dir.join(fff::OWNER_MARKER).exists());
 }
 
 // Anything else in the directory means it is not ours: warn, stay off, and
@@ -179,6 +219,7 @@ fn a_directory_holding_another_file_is_never_touched() {
         std::fs::read(snapshot_dir.join("data.mdb")).unwrap(),
         b"not an lmdb environment"
     );
+    assert!(!snapshot_dir.join(fff::OWNER_MARKER).exists());
 }
 
 // The portability-friendly stand-in for a read-only directory: the env path's
