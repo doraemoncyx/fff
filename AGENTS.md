@@ -7,12 +7,22 @@ This repository contains **FFF.nvim (Fast File Finder)**, a high-performance fil
 `tools/check.ps1` is the one entry point. It exports the pinned zig that `zlob`
 needs (the zig on PATH is often too old), so cargo is never invoked by hand.
 
-- `tools/check.ps1 -Mode all` - fmt, clippy, comment rules, then the whole suite
-- `tools/check.ps1 -Mode fast` - clippy, comment rules, and only the crates you changed
-- `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments` / `-Mode test`
+Its default mode is scoped, on purpose:
+
+- `tools/check.ps1` (or `-Mode fast`) - clippy, comment rules, and the tests of
+  the crates you changed. This is the loop: run it after every edit.
+- `tools/check.ps1 -Mode fast -Filter <test name>` - a single test. Use this
+  while iterating on one function; it finishes in well under a second.
+- `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments`
 - `tools/check.ps1 -Mode fix` - apply `cargo fmt`
 
-CI runs the same four checks: `.github/workflows/rust.yml`.
+`-Mode all` runs the whole suite and **refuses unless `FFF_FULL_CHECK=1` is
+set**. That is deliberate: the full suite links 46 integration binaries, which
+is minutes of work to re-prove changes a single crate cannot reach. CI sets the
+variable; an implementation agent should not. The release gate is the only other
+place it belongs.
+
+Do not run `cargo test --workspace` directly for the same reason.
 
 ### Building
 

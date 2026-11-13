@@ -6,7 +6,9 @@
 
 param(
     [ValidateSet("all", "fast", "lint", "fmt", "comments", "test", "fix")]
-    [string]$Mode = "all",
+    [string]$Mode = "fast",
+    # Names a single test so a change can be checked without its whole crate.
+    [string]$Filter = "",
     [string]$Path = "",
     [switch]$Verbose
 )
@@ -96,24 +98,59 @@ function Test-Workspace {
     }
 }
 
-# Only the crates a change can reach. $Path is a crate directory or a file.
-function Test-Fast {
-    $crates = @()
-    if ($Path) {
-        if (Test-Path $Path -PathType Container) {
-            $crates = @($Path)
-        } else {
-            $crates = @((Split-Path -Parent (Split-Path -Parent $Path)))
-        }
+# A crate directory is not a package name: `crates/fff-core` is published as
+# `fff-search`, and cargo rejects the path.
+function Get-PackageName {
+    param([string]$CrateDir)
+
+    $manifest = Join-Path $CrateDir "Cargo.toml"
+    if (-not (Test-Path $manifest)) { return $null }
+
+    foreach ($line in Get-Content $manifest) {
+        if ($line -match '^\s*name\s*=\s*"([^"]+)"') { return $Matches[1] }
+    }
+    return $null
+}
+
+# Crates a change can reach: what is uncommitted, else what the last commit
+# touched. Returned as package names cargo accepts.
+function Get-ChangedCrates {
+    $files = @(git status --porcelain | ForEach-Object { $_.Substring(3) })
+    if ($files.Count -eq 0) {
+        $files = @(git diff --name-only HEAD~1 2>$null)
     }
 
-    if ($crates.Count -eq 0) {
-        # Nothing named: fall back to the crates with uncommitted changes.
-        $changed = git status --porcelain | ForEach-Object { $_.Substring(3) }
-        foreach ($file in $changed) {
-            if ($file -match '^crates/([^/]+)/') { $crates += "crates/$($Matches[1])" }
-        }
-        $crates = $crates | Select-Object -Unique
+    $dirs = foreach ($file in $files) {
+        if ($file -match '^crates/([^/\\]+)/') { "crates/$($Matches[1])" }
+    }
+    return @($dirs | Select-Object -Unique | ForEach-Object { Get-PackageName $_ } | Where-Object { $_ })
+}
+
+# Resolves any path inside a crate to its package name: a file two directories
+# deep is not enough to find the crate root.
+function Resolve-TargetCrate {
+    param([string]$Target)
+
+    $full = if ([System.IO.Path]::IsPathRooted($Target)) { $Target } else { Join-Path $repo $Target }
+    $relative = $full.Substring($repo.Length).TrimStart('\', '/', '.')
+
+    if ($relative -match 'crates[\\/]([^\\/]+)') {
+        return Get-PackageName (Join-Path $repo "crates/$($Matches[1])")
+    }
+    if (Test-Path (Join-Path $full "Cargo.toml")) {
+        return Get-PackageName $full
+    }
+    return $null
+}
+
+# Test execution is the expensive, local part, so it is scoped. Clippy stays
+# workspace-wide: it is seconds, and a scoped run would miss a change in
+# fff-core that breaks a dependent crate.
+function Test-Fast {
+    $crates = if ($Path) {
+        @(Resolve-TargetCrate $Path | Where-Object { $_ })
+    } else {
+        Get-ChangedCrates
     }
 
     if ($crates.Count -eq 0) {
@@ -122,7 +159,9 @@ function Test-Fast {
     }
 
     foreach ($crate in $crates) {
-        Invoke-Step "test $crate" "cargo" (@("test", "-p") + $crate + $zlob)
+        $args = @("test", "-p") + $crate + $zlob
+        if ($Filter) { $args += $Filter }
+        Invoke-Step "test $crate" "cargo" $args
     }
 }
 
@@ -139,6 +178,16 @@ function Test-Comments {
 
 switch ($Mode) {
     "all" {
+        # The full suite is CI's job and the orchestrator's, not an
+        # implementation agent's: it is minutes of linking for a change that
+        # one crate's tests can prove. The variable is the whole constraint.
+        if ($env:FFF_FULL_CHECK -ne "1") {
+            Write-Host "refusing -Mode all: full-suite runs belong to CI." -ForegroundColor Yellow
+            Write-Host "  use  -Mode fast  (or -Mode fast -Filter <test name>)" -ForegroundColor Yellow
+            Write-Host "  or set FFF_FULL_CHECK=1 if you are the one running the release gate." -ForegroundColor Yellow
+            $lock.Dispose()
+            exit 1
+        }
         Invoke-Step "fmt" "cargo" @("fmt", "--all", "--check")
         Invoke-Step "clippy" "cargo" (@("clippy", "--workspace") + $zlob + @("--", "-D", "warnings"))
         Test-Comments

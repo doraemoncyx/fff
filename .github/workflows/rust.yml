@@ -12,6 +12,11 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The full suite runs here and nowhere else by default: `check.ps1 -Mode all`
+    # refuses without this, so an implementation agent cannot spend minutes
+    # linking every target to prove a one-crate change.
+    env:
+      FFF_FULL_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -23,19 +28,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: rustfmt
-        run: cargo fmt --all --check
-
-      - name: clippy
-        run: cargo clippy --workspace --no-default-features --features zlob -- -D warnings
-
-      # The two mechanical comment rules in AGENTS.md, ratcheted against
-      # tools/comment-baseline.txt so existing debt does not hide new debt.
-      - name: comment rules
+      # fmt, clippy, the comment ratchet, then the whole suite.
+      - name: check
         shell: pwsh
-        run: ./tools/check-comments.ps1
-
-      - name: tests
-        run: >
-          cargo test --workspace --no-default-features --features zlob
-          --exclude fff-nvim --exclude fff-python
+        run: ./tools/check.ps1 -Mode all
