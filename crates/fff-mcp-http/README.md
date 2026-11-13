@@ -48,10 +48,13 @@ request to get the complete set. `served_by` names the Roots that were merged;
 
 ## Parameters
 
-Required: `querystr` (aliases `query`, `pattern`; a JSON array is joined with
-spaces) and `tardir` (absolute path; a directory or a single file. The directory
-— or the file's parent — is indexed on demand and an error is returned if the
-path does not exist).
+Any one of `querystr` (canonical), `query` or `pattern` names the query; the
+tool's `inputSchema` advertises all three, and a JSON array is joined with
+spaces. `tardir` is the only required key, and the schema accepts any one
+identifier key — passing two in one call is a duplicate-field error, not a
+precedence rule. `tardir` is an absolute path, a directory or a single file: the
+directory — or the file's parent — is indexed on demand and an error is returned
+if the path does not exist.
 
 Optional, same semantics as `fff-mcp`: `path`, `paths`, `globs` (`!` prefix
 excludes), `hidden` (default `true`), `mode` (`fuzzy` default, `glob`,
@@ -73,14 +76,14 @@ The `grep` and `multi_grep` MCP tools and the `GET /grep` / `GET /multi_grep`
 routes search file contents. Both tools require `tardir`, exactly like
 `find_files`.
 
-`grep` takes `query` (aliases `pattern` and `querystr`, so the curl name is
-the same as `/search`; a JSON array is joined with spaces) plus
-`path`, `paths`, `globs`, `hidden`, `mode` (`auto` default, `regex`,
-`literal`), `case` (`smart`, `sensitive`, `insensitive`), `maxResults`
-(default 100, or 30 with `definitions_only`, clamped to 200), `cursor`,
-`output_mode` (`content` default, `files_with_matches`, `count`), `context`,
-`before_context`, `after_context`, `max_matches_per_file` and
-`definitions_only`.
+`grep` takes any one of `query` (canonical), `pattern` and `querystr` — the same
+three keys are advertised on both servers, so the curl name matches `/search`; a
+JSON array is joined with spaces. It also takes `path`, `paths`, `globs`,
+`hidden`, `mode` (`auto` default, `regex`, `literal`), `case` (`smart`,
+`sensitive`, `insensitive`), `maxResults` (default 100, or 30 with
+`definitions_only`, clamped to 200), `cursor`, `output_mode` (`content` default,
+`files_with_matches`, `count`), `context`, `before_context`, `after_context`,
+`max_matches_per_file` and `definitions_only`.
 
 `multi_grep` takes `patterns` (a string or an array; OR logic), `constraints`
 (a `rg`-shaped path/module/glob string), `maxResults` (default 20), `cursor`,

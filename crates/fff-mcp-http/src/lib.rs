@@ -13,6 +13,7 @@ mod params;
 mod registry;
 mod root;
 mod scan_gate;
+mod schema_alias;
 mod scope;
 mod search;
 mod server;

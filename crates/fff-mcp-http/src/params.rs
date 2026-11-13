@@ -20,13 +20,11 @@ pub enum Mode {
 
 // Request parameters shared by `GET /search` and the `find_files` MCP tool.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = crate::schema_alias::find_files_params_schema)]
 pub struct Params {
-    // Fuzzy filename or path query. Empty lists everything in scope.
-    #[serde(
-        alias = "query",
-        alias = "pattern",
-        deserialize_with = "deserialize_string"
-    )]
+    /// Fuzzy filename or path query. Empty lists everything in scope; `query` and `pattern` are aliases.
+    #[serde(alias = "query", alias = "pattern")]
+    #[serde(deserialize_with = "deserialize_string")]
     pub querystr: String,
     /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,

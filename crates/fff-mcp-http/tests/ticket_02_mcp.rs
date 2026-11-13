@@ -79,8 +79,7 @@ fn initialize_then_list_then_call_roundtrip() {
         .iter()
         .filter_map(|value| value.as_str())
         .collect();
-    assert!(required.contains(&"querystr"), "{schema}");
-    assert!(required.contains(&"tardir"), "{schema}");
+    assert_eq!(required, ["tardir"], "{schema}");
     for property in [
         "path",
         "paths",

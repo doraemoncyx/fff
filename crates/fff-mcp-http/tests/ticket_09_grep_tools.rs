@@ -132,8 +132,8 @@ fn tools_list_includes_all_three_tools() {
             .map(|value| value.as_str().unwrap().to_string())
             .collect()
     };
-    assert!(required("grep").contains(&"tardir".to_string()));
-    assert!(required("grep").contains(&"query".to_string()));
+    assert_eq!(required("grep"), ["tardir".to_string()]);
+    assert_eq!(required("find_files"), ["tardir".to_string()]);
     assert!(required("multi_grep").contains(&"tardir".to_string()));
     assert!(required("multi_grep").contains(&"patterns".to_string()));
 

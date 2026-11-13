@@ -93,12 +93,12 @@ fn make_grep_options(
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(transform = crate::schema_alias::find_files_params_schema)]
 pub struct FindFilesParams {
     /// Fuzzy filename or path query. Put known module constraints in path.
-    // `pattern` alias for consistency with grep's alias and the common
-    // file-search parameter name (#311). Also tolerant of LLMs that emit
-    // the multi-value query as a JSON array of terms.
-    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
+    // `pattern` and `querystr` mirror the HTTP server's keys (#311); arrays coalesce.
+    #[serde(alias = "pattern", alias = "querystr")]
+    #[serde(deserialize_with = "deserialize_string")]
     pub query: String,
     /// Directory, filename, or one glob to search. Set this from the request's module context.
     /// Examples: "src/net", "client.py", "**/*billing*client*/**".
@@ -120,13 +120,12 @@ pub struct FindFilesParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(transform = crate::schema_alias::grep_params_schema)]
 pub struct GrepParams {
     /// Content pattern. Use mode="regex" for alternatives such as deadline|timeout.
-    // `pattern` alias: LLMs that have seen multi_grep (which uses `patterns`)
-    // routinely call grep with `pattern`; accept it instead of erroring out
-    // with an unhelpful "missing field `query`" (#311). Also tolerant of LLMs
-    // that emit the query as a JSON array of terms.
-    #[serde(alias = "pattern", deserialize_with = "deserialize_string")]
+    // `pattern` (multi_grep habit) and `querystr` (HTTP spelling) are aliases (#311).
+    #[serde(alias = "pattern", alias = "querystr")]
+    #[serde(deserialize_with = "deserialize_string")]
     pub query: String,
     /// Complete directory name, filename, or glob. Use **/*transport*/** for a partial module name.
     pub path: Option<String>,
@@ -2872,13 +2871,17 @@ mod tests {
         ] {
             let value = serde_json::to_value(schema).unwrap();
             assert!(value["properties"].get("path").is_some());
-            assert!(
-                !value["required"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|key| key == "path")
-            );
+            let required = required_keys(&value);
+            assert!(!required.iter().any(|key| *key == "path"), "{value}");
+            assert!(!required.iter().any(|key| *key == "query"), "{value}");
+            for key in IDENTIFIER_KEYS {
+                assert_eq!(value["properties"][key]["type"], "string", "{value}");
+                assert!(
+                    value["properties"][key]["description"].is_string(),
+                    "{value}"
+                );
+            }
+            assert_eq!(identifier_branches(&value), IDENTIFIER_KEYS, "{value}");
         }
     }
 
@@ -3799,5 +3802,25 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned()
+    }
+
+    const IDENTIFIER_KEYS: [&str; 3] = ["query", "pattern", "querystr"];
+
+    fn required_keys(schema: &serde_json::Value) -> Vec<&str> {
+        schema["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|key| key.as_str())
+            .collect()
+    }
+
+    fn identifier_branches(schema: &serde_json::Value) -> Vec<&str> {
+        schema["anyOf"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|branch| branch["required"][0].as_str())
+            .collect()
     }
 }

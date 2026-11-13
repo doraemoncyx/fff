@@ -14,13 +14,11 @@ use crate::scope::{
 const MAX_CONTEXT_LINES: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = crate::schema_alias::grep_params_schema)]
 pub(crate) struct GrepParams {
     /// Content pattern. Use mode="regex" for alternatives such as deadline|timeout.
-    #[serde(
-        alias = "pattern",
-        alias = "querystr",
-        deserialize_with = "deserialize_string"
-    )]
+    #[serde(alias = "pattern", alias = "querystr")]
+    #[serde(deserialize_with = "deserialize_string")]
     pub query: String,
     /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,

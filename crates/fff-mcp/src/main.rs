@@ -4,6 +4,7 @@ mod handshake;
 mod healthcheck;
 mod output;
 mod parent;
+mod schema_alias;
 mod scope;
 mod server;
 mod update_check;
