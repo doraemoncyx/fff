@@ -1,6 +1,6 @@
 # Persist the content index as per-file bigram rows, not as columns
 
-**Status**: proposed
+**Status**: accepted
 
 A Snapshot stores one row per file — that file's sorted bigram keys, plus its
 binary verdict, `size` and nanosecond `mtime` — and an adopting Index rebuilds
@@ -46,8 +46,9 @@ a `root_prefix || kind || payload` key: a Root is then deleted with a single
   cache, paid once, against the ~72% of a later scan that it removes.
 - Non-indexable files get rows too — empty key list, verdict only. Without them a
   hit still pays the serial sniff pass, which measured 3.16 s of a 15.14 s cold
-  scan. It also means `--no-content-indexing` stays fast, which it currently is
-  not (see `.scratch/snapshot/issue-serial-sniff.md`).
+  scan. Note this does not help `--no-content-indexing`: that path never touches
+  the Snapshot, and its own 71.5 s serial sniff remains its own defect (see
+  `.scratch/snapshot/issue-serial-sniff.md`).
 - The binary verdict has to travel in the row. Skipping the content read on a
   hit would otherwise lose it, and grep would start treating images and
   binaries as text.
