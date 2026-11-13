@@ -1,0 +1,88 @@
+# Glossary
+
+Terms for the multi-root HTTP search service (`crates/fff-mcp-http`).
+
+## Root
+
+An absolute directory that has been indexed, canonicalized and used as the cache
+key. A Root is the identity of an Index. Two spellings of the same directory
+(case, trailing separator, `\\?\` prefix, `..`) are the same Root.
+
+_Not_: base path, workspace, project.
+
+## Index
+
+Everything the service holds for one Root: the file and directory tables produced
+by a scan, plus the live watcher that keeps them current. An Index is the unit
+of caching, eviction, and staleness.
+
+_Not_: cache entry, snapshot.
+
+## Content index
+
+The part of an Index that answers "which files could contain this text": a
+per-file set of bigrams, read from file contents and arranged into columns so a
+grep query can discard files without opening them.
+
+_Not_: prefilter (that is its use, not its contents), bigram index (an
+implementation), file table.
+
+## Binary verdict
+
+The judgement that a file's contents are not text. It is derived by reading the
+file, it is part of the Content index, and it decides whether grep may read that
+file at all.
+
+_Not_: extension, ignored file (a binary is indexed, not skipped).
+
+## Snapshot
+
+The on-disk copy of one Root's Content index: for each file, its bigrams, its
+Binary verdict, and the file identity the verdict is valid for. A Snapshot does
+not hold the file or directory tables — those are rebuilt by every scan. It is
+not an Index: it has no watcher, it answers no request, and it never covers a
+tardir. It carries no authority on its own — it counts only once an Index
+adopts a row and confirms that row still matches the file on disk.
+
+_Not_: cached Index, index, cache entry, file table backup.
+
+## Stale
+
+A Snapshot is stale with respect to a file when the file on disk no longer
+matches what the Snapshot recorded for it. Staleness is decided per file, never
+per Root: one stale file does not discard the rest of the Snapshot.
+
+_Not_: outdated, dirty, expired.
+
+## tardir
+
+The directory named by a single request. A tardir is not necessarily a Root: it
+is only a Root when an Index happens to exist for exactly that directory.
+
+_Not_: target, scope, query dir.
+
+## Cover
+
+An Index covers a tardir when its Root is the tardir or an ancestor of it. A
+covering Index can answer a request for that tardir because every file under the
+tardir is already in it. An Index never covers a tardir above its own Root.
+
+## Serving set
+
+The set of Indexes consulted for one request: the deepest Index covering the
+tardir, plus every Index whose Root lies below the tardir. Indexes outside both
+relations are never consulted.
+
+## Merge
+
+Answering one request from several Indexes in the serving set: results are
+deduplicated by absolute path and ordered as one list. Merge combines results,
+never index structures: two Indexes are never folded into one.
+
+_Not_: union index, index merge.
+
+## Scan-in-progress
+
+The state of an Index whose initial walk has not finished. A request can be
+answered while an Index is scan-in-progress, using whatever the walk has
+published so far.
