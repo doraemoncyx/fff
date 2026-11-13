@@ -163,6 +163,37 @@ impl BigramIndexBuilder {
         self.add_file_content_inner(skip_builder, file_idx, content, Some(row))
     }
 
+    // Replays a Snapshot row through the same column allocation the content
+    // path uses, so a hit answers every query a build does. `false` means the
+    // slab is gone, exactly as `add_file_content_inner` reports it.
+    pub(crate) fn add_row_keys(
+        &self,
+        skip_builder: &Self,
+        file_idx: usize,
+        row: &crate::index::bigram_row::Row,
+    ) -> bool {
+        // A one-byte file recorded no keys and no populated count either.
+        if row.size < 2 {
+            return true;
+        }
+        let (Some(consec_base), Some(skip_base)) =
+            (self.col_data_ptr(), skip_builder.col_data_ptr())
+        else {
+            return false;
+        };
+
+        debug_assert!(file_idx < self.file_count);
+        let word_idx = file_idx / 64;
+        let bit_mask = 1u64 << (file_idx % 64);
+
+        self.set_keys(&row.consecutive, word_idx, bit_mask, consec_base);
+        skip_builder.set_keys(&row.skip1, word_idx, bit_mask, skip_base);
+
+        self.populated.fetch_add(1, Ordering::Relaxed);
+        skip_builder.populated.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     fn add_file_content_inner(
         &self,
         skip_builder: &Self,
@@ -347,6 +378,21 @@ impl BigramIndexBuilder {
             unsafe {
                 *seen.get_unchecked_mut(w) = prev | bit;
             }
+            let col = self.get_or_alloc_column(key);
+            if col != NO_COLUMN {
+                unsafe {
+                    let p = col_base.add(col as usize * words + word_idx);
+                    *p |= bit_mask;
+                }
+            }
+        }
+    }
+
+    // Inserts keys by key through `get_or_alloc_column`, the same route the
+    // content path takes, so columns hold the same bits whatever the ids.
+    fn set_keys(&self, keys: &[u16], word_idx: usize, bit_mask: u64, col_base: *mut u64) {
+        let words = self.words;
+        for &key in keys {
             let col = self.get_or_alloc_column(key);
             if col != NO_COLUMN {
                 unsafe {
@@ -1121,6 +1167,13 @@ fn read_bigram_chunk<'a>(
     Some(data)
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BigramBuildStats {
+    pub(crate) row_hits: u64,
+    pub(crate) row_misses: u64,
+    pub(crate) content_reads: u64,
+}
+
 #[tracing::instrument(skip_all, name = "Building Bigram Index", level = tracing::Level::DEBUG)]
 pub(crate) fn build_bigram_index(
     files: &[crate::types::FileItem],
@@ -1128,11 +1181,15 @@ pub(crate) fn build_bigram_index(
     base_path: &std::path::Path,
     arena: crate::simd_path::ArenaPtr,
     rows: Option<&crate::index::RowSink<'_>>,
-) -> BigramFilter {
+    source: Option<&crate::index::RowSource<'_>>,
+) -> (BigramFilter, BigramBuildStats) {
     // Snapshot rows key on (size, mtime_ns) per file.
     debug_assert_eq!(mtime_ns.len(), files.len());
     let builder = BigramIndexBuilder::new(files.len());
     let skip_builder = BigramIndexBuilder::new(files.len());
+    let hits = AtomicUsize::new(0);
+    let misses = AtomicUsize::new(0);
+    let reads = AtomicUsize::new(0);
 
     #[cfg(unix)]
     let base_fd: libc::c_int = open_base_dir_fd(base_path);
@@ -1150,6 +1207,17 @@ pub(crate) fn build_bigram_index(
             .enumerate()
             .for_each(|(chunk_idx, chunk)| {
                 let base_idx = chunk_idx * BIGRAM_CHUNK_FILES;
+                let mut path_buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
+
+                // The replay works on the same 256-file chunks the build does, so
+                // one short read transaction covers exactly one worker's chunk.
+                let chunk_rows = source
+                    .map(|source| {
+                        let ns = mtime_ns.get(base_idx..base_idx + chunk.len());
+                        source.fetch(chunk, ns.unwrap_or_default(), arena, &mut path_buf)
+                    })
+                    .unwrap_or_default();
+
                 let mut row = crate::index::bigram_row::Row {
                     mtime_ns: 0,
                     size: 0,
@@ -1159,6 +1227,17 @@ pub(crate) fn build_bigram_index(
                 };
                 for (offset, file) in chunk.iter().enumerate() {
                     let file_idx = base_idx + offset;
+
+                    if let Some(hit) = chunk_rows.get(offset).and_then(Option::as_ref) {
+                        file.set_binary(hit.binary);
+                        if builder.add_row_keys(&skip_builder, file_idx, hit) {
+                            hits.fetch_add(1, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                    if source.is_some() {
+                        misses.fetch_add(1, Ordering::Relaxed);
+                    }
 
                     if file.is_binary() || file.size == 0 {
                         continue;
@@ -1170,8 +1249,8 @@ pub(crate) fn build_bigram_index(
                         if buf.len() < want {
                             buf.resize(want, 0);
                         }
-                        let mut path_buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
 
+                        reads.fetch_add(1, Ordering::Relaxed);
                         if let Some(content) = read_bigram_chunk(
                             file,
                             base_fd,
@@ -1192,12 +1271,16 @@ pub(crate) fn build_bigram_index(
                                 builder.add_file_content(&skip_builder, file_idx, content);
                                 return;
                             };
+                            // A one-byte file contributes no keys and no populated
+                            // count, so only its identity row is worth writing; a
+                            // refusal for a longer file means the slab is gone.
                             if !builder.add_file_content_rows(
                                 &skip_builder,
                                 file_idx,
                                 content,
                                 &mut row,
-                            ) {
+                            ) && file.size >= 2
+                            {
                                 return;
                             }
                             row.mtime_ns = mtime_ns.get(file_idx).copied().unwrap_or(0);
@@ -1229,7 +1312,12 @@ pub(crate) fn build_bigram_index(
     // after the sync, so it's very important to let the unused memory go back to the OS
     crate::file_picker::hint_allocator_collect();
 
-    index
+    let stats = BigramBuildStats {
+        row_hits: hits.load(Ordering::Relaxed) as u64,
+        row_misses: misses.load(Ordering::Relaxed) as u64,
+        content_reads: reads.load(Ordering::Relaxed) as u64,
+    };
+    (index, stats)
 }
 
 #[tracing::instrument(skip_all, name = "Sniffing Large Files Binary", level = tracing::Level::DEBUG)]
@@ -1811,7 +1899,9 @@ mod tests {
         }
 
         let mtime_ns = vec![0u64; files.len()];
-        let index = build_bigram_index(&files, &mtime_ns, base, store.as_arena_ptr(), None);
+        let (index, stats) =
+            build_bigram_index(&files, &mtime_ns, base, store.as_arena_ptr(), None, None);
+        assert_eq!(stats.content_reads, 9, "only the non-empty files are read");
         let candidates = index
             .query(b"unicorn")
             .expect("the text files must be in the index");

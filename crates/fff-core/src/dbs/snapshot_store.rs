@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::index::bigram_filter::{
     BIGRAM_CHUNK_FILES, MAX_BIGRAM_COLUMNS, SKIP_INDEX_MIN_DENSITY_PCT,
 };
+use crate::index::bigram_row::Row;
 use crate::lmdb::{DbHealth, LmdbStore};
 
 pub const SNAPSHOT_SCHEMA: u16 = 1;
@@ -66,30 +67,57 @@ impl SnapshotStore {
     }
 
     pub fn put_meta(&self, root: &Path, logical_bytes: u64) -> Result<()> {
-        let meta = SnapshotMeta {
-            schema: SNAPSHOT_SCHEMA,
-            fingerprint: fingerprint(),
-            logical_bytes,
-            last_used: now_secs(),
-            root: normalized_root(root),
+        self.write_meta(
+            root,
+            &SnapshotMeta {
+                schema: SNAPSHOT_SCHEMA,
+                fingerprint: fingerprint(),
+                logical_bytes,
+                last_used: now_secs(),
+                root: normalized_root(root),
+            },
+        )
+    }
+
+    // A Root's rows may be replayed only when its meta names this Root and was
+    // written by this build of the derivation; otherwise every row is a miss.
+    pub(crate) fn root_is_current(&self, root: &Path) -> bool {
+        let Ok(Some(meta)) = self.read_meta(root) else {
+            return false;
         };
-        let mut wtxn = self
+        meta.schema == SNAPSHOT_SCHEMA
+            && meta.fingerprint == fingerprint()
+            && meta.root == normalized_root(root)
+    }
+
+    // Reads one chunk's rows in a single read transaction, dropped before the
+    // caller handles them. `None` is a missing or undecodable row; the second
+    // field is the stored byte length, which the caller counts as still on disk.
+    pub(crate) fn get_rows(
+        &self,
+        root: &Path,
+        payloads: &[[u8; 32]],
+        out: &mut Vec<Option<(Row, usize)>>,
+    ) -> Result<()> {
+        out.clear();
+        out.reserve(payloads.len());
+        let rtxn = self
             .env
-            .write_txn()
-            .map_err(|source| Error::DbStartWriteTxn {
+            .read_txn()
+            .map_err(|source| Error::DbStartReadTxn {
                 db: Self::LABEL,
                 source,
             })?;
-        self.meta_db()
-            .put(&mut wtxn, &meta_key(&root_prefix(root)), &meta)
-            .map_err(|source| Error::DbWrite {
+        let prefix = root_prefix(root);
+        for payload in payloads {
+            let key = key_bytes(&prefix, KIND_FILE, payload);
+            let value = self.db.get(&rtxn, &key).map_err(|source| Error::DbRead {
                 db: Self::LABEL,
                 source,
             })?;
-        wtxn.commit().map_err(|source| Error::DbCommit {
-            db: Self::LABEL,
-            source,
-        })
+            out.push(value.and_then(|bytes| Row::decode(bytes).map(|row| (row, bytes.len()))));
+        }
+        Ok(())
     }
 
     pub fn read_meta(&self, root: &Path) -> Result<Option<SnapshotMeta>> {
@@ -170,6 +198,47 @@ impl SnapshotStore {
 
     fn meta_db(&self) -> Database<Bytes, SerdeBincode<SnapshotMeta>> {
         self.db.remap_data_type()
+    }
+
+    fn write_meta(&self, root: &Path, meta: &SnapshotMeta) -> Result<()> {
+        let mut wtxn = self
+            .env
+            .write_txn()
+            .map_err(|source| Error::DbStartWriteTxn {
+                db: Self::LABEL,
+                source,
+            })?;
+        self.meta_db()
+            .put(&mut wtxn, &meta_key(&root_prefix(root)), meta)
+            .map_err(|source| Error::DbWrite {
+                db: Self::LABEL,
+                source,
+            })?;
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: Self::LABEL,
+            source,
+        })
+    }
+
+    // Lets tests plant a meta that a future build wrote, or another Root's.
+    #[cfg(test)]
+    pub(crate) fn put_foreign_meta(
+        &self,
+        root: &Path,
+        schema: u16,
+        fingerprint: u64,
+        stored_root: &str,
+    ) -> Result<()> {
+        self.write_meta(
+            root,
+            &SnapshotMeta {
+                schema,
+                fingerprint,
+                logical_bytes: 0,
+                last_used: now_secs(),
+                root: stored_root.to_string(),
+            },
+        )
     }
 
     fn commit_rows(
@@ -349,5 +418,113 @@ mod tests {
         assert_eq!(store.row_count(dir.path()).unwrap(), 0);
         assert_eq!(store.logical_bytes(dir.path()).unwrap(), 0);
         assert!(store.read_meta(dir.path()).unwrap().is_none());
+    }
+
+    fn payload(id: u8) -> [u8; 32] {
+        [id; 32]
+    }
+
+    fn encoded(id: u8) -> Vec<u8> {
+        Row {
+            mtime_ns: 7,
+            size: 11,
+            binary: id % 2 == 0,
+            consecutive: vec![0x6162, 0x6263],
+            skip1: vec![0x6163],
+        }
+        .encode()
+        .expect("encode")
+    }
+
+    #[test]
+    fn a_chunk_read_returns_one_slot_per_payload_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        store
+            .put_rows(
+                root,
+                [payload(1), payload(2), payload(3)].into_iter().zip([
+                    encoded(1),
+                    encoded(2),
+                    encoded(3),
+                ]),
+            )
+            .unwrap();
+
+        let mut out = Vec::new();
+        store
+            .get_rows(root, &[payload(2), payload(9), payload(1)], &mut out)
+            .unwrap();
+
+        assert_eq!(out.len(), 3);
+        let (second, second_len) = out[0].clone().expect("second row");
+        assert_eq!(second.mtime_ns, 7);
+        assert_eq!(second.size, 11);
+        assert!(second.binary);
+        assert_eq!(second_len, encoded(2).len());
+        assert!(out[1].is_none(), "a missing payload is a miss");
+        let (first, _) = out[2].clone().expect("first row");
+        assert!(!first.binary);
+    }
+
+    #[test]
+    fn a_corrupt_value_is_a_miss_and_not_a_chunk_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        let good = encoded(1);
+        store
+            .put_rows(
+                root,
+                [
+                    (payload(1), good[..good.len() - 1].to_vec()),
+                    (payload(2), good.clone()),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+
+        let mut out = Vec::new();
+        store
+            .get_rows(root, &[payload(1), payload(2)], &mut out)
+            .unwrap();
+
+        assert!(out[0].is_none());
+        assert!(
+            out[1].is_some(),
+            "a truncated row never hides its neighbours"
+        );
+    }
+
+    #[test]
+    fn a_row_is_replayed_only_when_its_meta_names_this_root_and_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = SnapshotStore::open(&root.join("snapshot-db")).unwrap();
+        assert!(!store.root_is_current(root), "no meta, no replay");
+
+        store.put_meta(root, 10).unwrap();
+        assert!(store.root_is_current(root));
+
+        store
+            .put_foreign_meta(root, SNAPSHOT_SCHEMA, 1, &normalized_root(root))
+            .unwrap();
+        assert!(!store.root_is_current(root), "a foreign fingerprint");
+
+        store
+            .put_foreign_meta(
+                root,
+                SNAPSHOT_SCHEMA + 1,
+                fingerprint(),
+                &normalized_root(root),
+            )
+            .unwrap();
+        assert!(!store.root_is_current(root), "a foreign schema");
+
+        store
+            .put_foreign_meta(root, SNAPSHOT_SCHEMA, fingerprint(), "elsewhere/repo")
+            .unwrap();
+        assert!(!store.root_is_current(root), "a foreign root");
     }
 }

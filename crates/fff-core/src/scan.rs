@@ -8,7 +8,9 @@ use crate::FileSync;
 use crate::dbs::SnapshotStore;
 use crate::error::Error;
 use crate::file_picker::{FFFMode, FilePickerIgnoreOptions};
-use crate::index::{RowSink, build_bigram_index, sniff_binary_for_non_indexable};
+use crate::index::{
+    BigramBuildStats, RowSink, RowSource, build_bigram_index, sniff_binary_for_non_indexable,
+};
 use crate::parallelism::BACKGROUND_THREAD_POOL;
 use crate::shared::{SharedFilePicker, SharedFrecency};
 use crate::types::ContentCacheBudget;
@@ -330,14 +332,14 @@ impl ScanJob {
         config: &ScanConfig,
         unsafe_snapshot: &crate::file_picker::PostScanUnsafeSnapshot,
         known_text: &[u64],
-    ) {
+    ) -> BigramBuildStats {
         let Some(arena) = unsafe_snapshot
             .arena // we are never touching overlays so this arena is always correct
             .as_ref()
             .map(|s| s.as_arena_ptr())
         else {
             tracing::error!("Failed to run post scan: arena is invalid");
-            return;
+            return BigramBuildStats::default();
         };
 
         let files: &[crate::types::FileItem] = &unsafe_snapshot.files[..unsafe_snapshot.base_count];
@@ -348,7 +350,7 @@ impl ScanJob {
             .get(..files.len())
             .unwrap_or_default();
         if signals.cancelled.load(Ordering::Acquire) {
-            return;
+            return BigramBuildStats::default();
         }
 
         if config.content_indexing {
@@ -356,14 +358,19 @@ impl ScanJob {
                 .snapshot_store
                 .as_ref()
                 .map(|store| RowSink::new(store, &unsafe_snapshot.base_path));
+            let source = config
+                .snapshot_store
+                .as_ref()
+                .map(|store| RowSource::new(store, &unsafe_snapshot.base_path));
             let indexable_count = unsafe_snapshot.indexable_count.min(files.len());
             let (indexable_files, non_indexable_files) = files.split_at(indexable_count);
-            let index = build_bigram_index(
+            let (index, stats) = build_bigram_index(
                 indexable_files,
                 &mtime_ns[..indexable_count],
                 &unsafe_snapshot.base_path,
                 arena,
                 rows.as_ref(),
+                source.as_ref(),
             );
 
             // A root change may have replaced the picker while this index was building.
@@ -394,28 +401,33 @@ impl ScanJob {
             // Verdict rows come after the sniff: it is what decides binary for them.
             if let (Some(rows), Some(store)) = (rows, config.snapshot_store.as_ref()) {
                 rows.push_verdicts(non_indexable_files, indexable_count, mtime_ns, arena);
-                let logical_bytes = rows.finish();
+                // Rows this scan reused are still on disk; only the rest was written.
+                let served = source.as_ref().map_or(0, RowSource::served_bytes);
+                let logical_bytes = rows.finish() + served;
                 if let Err(e) = store.put_meta(&unsafe_snapshot.base_path, logical_bytes) {
                     tracing::warn!(?e, "snapshot meta write failed");
                 }
             }
-        } else {
-            // this potentially a long running as we are not parallelizing it but it's okay
-            sniff_binary_for_non_indexable(
-                files,
-                0,
-                known_text,
-                mtime_ns,
-                &unsafe_snapshot.base_path,
-                arena,
-                &signals.cancelled,
-            );
+
+            return stats;
         }
+
+        // this potentially a long running as we are not parallelizing it but it's okay
+        sniff_binary_for_non_indexable(
+            files,
+            0,
+            known_text,
+            mtime_ns,
+            &unsafe_snapshot.base_path,
+            arena,
+            &signals.cancelled,
+        );
 
         // TODO Skipped as potentially unsafe - figure this out later
         // if config.warmup && !signals.cancelled.load(Ordering::Acquire) {
         //     warmup_mmaps(files, budget, &unsafe_snapshot.base_path, arena);
         // }
+        BigramBuildStats::default()
     }
 }
 
@@ -480,6 +492,18 @@ mod tests {
         root: &std::path::Path,
         store: &std::sync::Arc<SnapshotStore>,
     ) -> (u64, u64) {
+        let (_shared, _stats) = run_scan(root, Some(store));
+        (
+            store.row_count(root).unwrap(),
+            store.logical_bytes(root).unwrap(),
+        )
+    }
+
+    // A whole scan: walk, then post-scan. Returns the picker so tests can grep it.
+    fn run_scan(
+        root: &std::path::Path,
+        store: Option<&std::sync::Arc<SnapshotStore>>,
+    ) -> (SharedFilePicker, BigramBuildStats) {
         let shared = SharedFilePicker::default();
         let picker = collected(root);
         let signals = picker.scan_signals();
@@ -493,16 +517,61 @@ mod tests {
 
         let config = ScanConfig {
             content_indexing: true,
-            snapshot_store: Some(store.clone()),
+            snapshot_store: store.cloned(),
             ..Default::default()
         };
-        ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
+        let stats = ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
         drop(snapshot);
+        (shared, stats)
+    }
 
-        (
-            store.row_count(root).unwrap(),
-            store.logical_bytes(root).unwrap(),
-        )
+    // (relative path, line, text) — stable across two scans of one tree.
+    fn matches(shared: &SharedFilePicker, pattern: &str) -> Vec<(String, u64, String)> {
+        let guard = shared.read().unwrap();
+        let picker = guard.as_ref().unwrap();
+        let arena = picker.arena_base_ptr();
+        let query = crate::grep::parse_grep_query(pattern);
+        let options = crate::grep::GrepSearchOptions {
+            time_budget_ms: 0,
+            ..Default::default()
+        };
+        let result = picker.grep(&query, &options);
+        let mut found: Vec<_> = result
+            .matches
+            .iter()
+            .map(|m| {
+                (
+                    result.files[m.file_index].relative_path(arena),
+                    m.line_number,
+                    m.line_content.clone(),
+                )
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn mtime_ns(path: &std::path::Path) -> u64 {
+        crate::walk::mtime_ns(std::fs::metadata(path).unwrap().modified().ok())
+    }
+
+    fn set_mtime(path: &std::path::Path, at: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
+    fn fixture(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("alpha.txt"), "alpha_marker one\n").unwrap();
+        std::fs::write(root.join("beta.txt"), "beta_marker two\n").unwrap();
+        std::fs::write(root.join("sub").join("gamma.txt"), "gamma_marker three\n").unwrap();
+        // Too short to contribute a bigram, but still indexable: it must be a
+        // hit too, or the walk's text files would not all come from rows.
+        std::fs::write(root.join("tiny.txt"), "x").unwrap();
     }
 
     #[test]
@@ -671,5 +740,277 @@ mod tests {
             let expected = crate::walk::mtime_ns(std::fs::metadata(abs).unwrap().modified().ok());
             assert_eq!(snapshot.mtime_ns[index], expected, "{abs:?}");
         }
+    }
+
+    // The whole point of the Snapshot: the walk still runs, no content is read.
+    #[test]
+    fn a_second_scan_of_an_unchanged_tree_reads_no_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        let first_matches = matches(&first, "marker");
+        assert_eq!(first_matches.len(), 3);
+        assert_eq!(cold.row_hits, 0);
+        assert_eq!(cold.content_reads, 4);
+        drop(first);
+
+        // A fresh process: the store is reopened before the second scan.
+        drop(store);
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let rows_before = store.logical_bytes(root).unwrap();
+        let (second, warm) = run_scan(root, Some(&store));
+
+        assert_eq!(warm.content_reads, 0, "no file content may be read");
+        assert_eq!(warm.row_hits, 4);
+        assert_eq!(warm.row_misses, 0);
+        assert_eq!(matches(&second, "marker"), first_matches);
+        // Reused rows were never rewritten, so they must still be counted.
+        assert_eq!(store.logical_bytes(root).unwrap(), rows_before);
+        assert_eq!(
+            store.read_meta(root).unwrap().unwrap().logical_bytes,
+            rows_before
+        );
+    }
+
+    #[test]
+    fn changing_one_file_makes_exactly_that_file_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, _) = run_scan(root, Some(&store));
+        assert_eq!(matches(&first, "fresh_marker").len(), 0);
+        drop(first);
+
+        std::fs::write(root.join("beta.txt"), "beta_marker two\nfresh_marker\n").unwrap();
+        let (second, warm) = run_scan(root, Some(&store));
+
+        assert_eq!(warm.row_hits, 3);
+        assert_eq!(warm.row_misses, 1);
+        assert_eq!(warm.content_reads, 1);
+        let found = matches(&second, "fresh_marker");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].0.ends_with("beta.txt"), "{found:?}");
+        assert_eq!(matches(&second, "alpha_marker").len(), 1);
+    }
+
+    // The test that pays for nanosecond mtimes: same second, same length, new
+    // bytes. Whole-second identity would call this a hit and serve stale matches.
+    #[test]
+    fn a_rewrite_in_the_same_second_with_the_same_size_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "first_marker\n").unwrap();
+        std::fs::write(root.join("b.txt"), "beta_marker\n").unwrap();
+
+        let base =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        set_mtime(
+            &root.join("a.txt"),
+            base + std::time::Duration::from_millis(200),
+        );
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, _) = run_scan(root, Some(&store));
+        assert_eq!(matches(&first, "first_marker").len(), 1);
+        drop(first);
+
+        std::fs::write(root.join("a.txt"), "secnd_marker\n").unwrap();
+        set_mtime(
+            &root.join("a.txt"),
+            base + std::time::Duration::from_millis(900),
+        );
+        assert_eq!(mtime_ns(&root.join("a.txt")) / 1_000_000_000, 1_700_000_000);
+
+        let (second, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.row_hits, 1, "only b.txt may be served from its row");
+        assert_eq!(warm.row_misses, 1);
+        assert_eq!(matches(&second, "first_marker").len(), 0);
+        assert_eq!(matches(&second, "secnd_marker").len(), 1);
+    }
+
+    #[test]
+    fn a_matching_size_with_a_different_mtime_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let base =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        set_mtime(&root.join("alpha.txt"), base);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        drop(run_scan(root, Some(&store)));
+
+        // Same byte length, same content, one second later on disk.
+        set_mtime(
+            &root.join("alpha.txt"),
+            base + std::time::Duration::from_secs(1),
+        );
+        let (second, warm) = run_scan(root, Some(&store));
+
+        assert_eq!(warm.row_hits, 3);
+        assert_eq!(warm.row_misses, 1);
+        assert_eq!(warm.content_reads, 1);
+        assert_eq!(matches(&second, "marker").len(), 3);
+    }
+
+    #[test]
+    fn a_matching_mtime_with_a_different_size_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let base =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        set_mtime(&root.join("alpha.txt"), base);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        drop(run_scan(root, Some(&store)));
+
+        std::fs::write(root.join("alpha.txt"), "alpha_marker one and extralong\n").unwrap();
+        set_mtime(&root.join("alpha.txt"), base);
+        let (second, warm) = run_scan(root, Some(&store));
+
+        assert_eq!(warm.row_hits, 3);
+        assert_eq!(warm.row_misses, 1);
+        assert_eq!(warm.content_reads, 1);
+        assert_eq!(matches(&second, "extralong").len(), 1);
+    }
+
+    #[test]
+    fn a_meta_from_another_build_or_root_makes_every_row_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        drop(run_scan(root, Some(&store)));
+        let meta = store.read_meta(root).unwrap().expect("meta row");
+        let rows = store.row_count(root).unwrap();
+
+        let foreign = [
+            (
+                meta.schema,
+                meta.fingerprint ^ 1,
+                meta.root.clone(),
+                "a foreign fingerprint",
+            ),
+            (
+                meta.schema + 1,
+                meta.fingerprint,
+                meta.root.clone(),
+                "a foreign schema",
+            ),
+            (
+                meta.schema,
+                meta.fingerprint,
+                "somewhere/else".to_string(),
+                "a foreign root",
+            ),
+        ];
+        for (schema, fingerprint, stored_root, why) in foreign {
+            store
+                .put_foreign_meta(root, schema, fingerprint, &stored_root)
+                .unwrap();
+            let (_scan, warm) = run_scan(root, Some(&store));
+            assert_eq!(warm.row_hits, 0, "{why}");
+            assert_eq!(warm.content_reads, 4, "{why}");
+            assert_eq!(store.row_count(root).unwrap(), rows, "{why}: no deletion");
+        }
+    }
+
+    // A hit skips the content read, so the Binary verdict has to come from the
+    // row or grep starts reading images as text.
+    #[test]
+    fn the_binary_verdict_travels_with_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("plain.txt"), "plain_marker\n").unwrap();
+        // No known binary extension, so the walk calls it indexable; the content
+        // pass is what finds the NUL byte.
+        std::fs::write(root.join("mixed.txt"), b"text_marker\0payload\n").unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        assert_eq!(cold.content_reads, 2);
+        assert_eq!(matches(&first, "text_marker").len(), 0);
+        drop(first);
+
+        let (second, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.row_hits, 2);
+        assert_eq!(warm.content_reads, 0);
+        assert_eq!(matches(&second, "text_marker").len(), 0);
+        assert_eq!(matches(&second, "plain_marker").len(), 1);
+    }
+
+    fn assert_same_answers(from_files: &SharedFilePicker, from_rows: &SharedFilePicker) {
+        let left = from_files.read().unwrap();
+        let right = from_rows.read().unwrap();
+        let left = left.as_ref().unwrap().bigram_index().expect("file built");
+        let right = right.as_ref().unwrap().bigram_index().expect("row built");
+
+        assert_eq!(left.words(), right.words());
+        assert_eq!(left.columns_used(), right.columns_used());
+        assert_eq!(left.populated(), right.populated());
+
+        for query in [
+            b"alpha".as_slice(),
+            b"marker",
+            b"three",
+            b"gamma",
+            b"zzzq",
+            b"sub",
+        ] {
+            assert_eq!(
+                left.query(query),
+                right.query(query),
+                "candidates differ for {:?}",
+                std::str::from_utf8(query).unwrap()
+            );
+        }
+
+        for hi in 32u16..=126 {
+            for lo in 32u16..=126 {
+                let key = hi << 8 | lo;
+                assert_eq!(left.has_key(key), right.has_key(key), "key {key:#06x}");
+                assert_eq!(
+                    left.column_bitset(key),
+                    right.column_bitset(key),
+                    "column for {key:#06x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_built_index_answers_like_a_file_built_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (from_files, cold) = run_scan(root, None);
+        assert_eq!(cold.row_hits, 0);
+        assert_eq!(cold.content_reads, 4);
+
+        drop(run_scan(root, Some(&store))); // seeds the rows
+        let (from_rows, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.content_reads, 0);
+        assert_eq!(warm.row_hits, 4);
+
+        assert_same_answers(&from_files, &from_rows);
     }
 }

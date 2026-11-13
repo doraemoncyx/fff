@@ -9,7 +9,8 @@ scan uses. This is what the service caches; the file table is not cached at all.
 
 Measured on a 137,756-file tree: building the content index takes 10.9 s against
 a 1.06 s walk, i.e. 72% of a 15.14 s cold scan. That ratio is the whole reason
-this cache exists.
+this cache exists. With the cache in place the same tree's second scan is 4.42 s
+against 20.73 s cold, with zero content reads.
 
 ## Considered Options
 
@@ -32,9 +33,12 @@ a `root_prefix || kind || payload` key: a Root is then deleted with a single
 
 ## Consequences
 
-- A hit must produce a `BigramFilter` bit-identical to a full build, including
-  the stride-2 skip index. Both paths therefore run the same `compress` +
-  `set_skip_index` code; a test asserts equality.
+- A hit must make the index answer exactly as a full build does — same candidate
+  set for every query, same column and population counts. Not "identical
+  bytes": column ids come from a shared counter as keys are first seen, in
+  parallel, so two builds of one tree already differ.
+- Both paths run the same `compress` + `set_skip_index` code, and a test asserts
+  the two indexes agree on queries rather than on memory.
 - Rows are larger than the compressed columns they replace: two key lists per
   file, measured at 592 bytes per file on disk against 299 bytes per file in
   memory. Disk, not memory, absorbs this; a 137k-file tree is about 82 MB.

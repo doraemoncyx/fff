@@ -7,6 +7,9 @@ pub(crate) mod bigram_row;
 pub(crate) mod snapshot_write;
 pub(crate) use snapshot_write::RowSink;
 
+pub(crate) mod snapshot_read;
+pub(crate) use snapshot_read::RowSource;
+
 mod bigram_query;
 pub use bigram_query::*;
 
