@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 fn get_memory_usage() -> Result<u64, Box<dyn std::error::Error>> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        return Err("Memory usage check is only supported on Linux and macOS".into());
+        Err("Memory usage check is only supported on Linux and macOS".into())
     }
 
     #[cfg(target_os = "macos")]

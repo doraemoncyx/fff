@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # zlob 1.8.0 declares a minimum zig of 0.17.1; an older one fails to build
+      # with "@backingInt is not a builtin", so the version is pinned here too.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --no-default-features --features zlob -- -D warnings
+
+      # The two mechanical comment rules in AGENTS.md, ratcheted against
+      # tools/comment-baseline.txt so existing debt does not hide new debt.
+      - name: comment rules
+        shell: pwsh
+        run: ./tools/check-comments.ps1
+
+      - name: tests
+        run: >
+          cargo test --workspace --no-default-features --features zlob
+          --exclude fff-nvim --exclude fff-python

@@ -36,6 +36,9 @@ tools/zig*/
 # Test logs
 fff-test.log
 
+# Local specs and tickets
+.scratch/
+
 # Python
 __pycache__/
 *.py[cod]

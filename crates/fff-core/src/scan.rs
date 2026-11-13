@@ -45,7 +45,7 @@ pub(crate) struct ScanConfig {
     pub(crate) ignore_options: FilePickerIgnoreOptions,
     pub(crate) enable_fs_root_scanning: bool,
     pub(crate) enable_home_dir_scanning: bool,
-    /// `None` means scans leave no Snapshot on disk and behave exactly as before.
+    // `None` means scans leave no Snapshot on disk and behave exactly as before.
     pub(crate) snapshot_store: Option<Arc<SnapshotStore>>,
 }
 

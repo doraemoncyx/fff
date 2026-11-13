@@ -4,24 +4,42 @@ This repository contains **FFF.nvim (Fast File Finder)**, a high-performance fil
 
 ## Development Commands
 
-Always prefer Makefile commands listed to the cargo/bun/node if possible.
+`tools/check.ps1` is the one entry point. It exports the pinned zig that `zlob`
+needs (the zig on PATH is often too old), so cargo is never invoked by hand.
+
+- `tools/check.ps1 -Mode all` - fmt, clippy, comment rules, then the whole suite
+- `tools/check.ps1 -Mode fast` - clippy, comment rules, and only the crates you changed
+- `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments` / `-Mode test`
+- `tools/check.ps1 -Mode fix` - apply `cargo fmt`
+
+CI runs the same four checks: `.github/workflows/rust.yml`.
 
 ### Building
 
 - `make build` - build everything
+- `build.py` - fetches the pinned zig and libclang, then builds `fff-mcp`
 
-### Testing and Development Tools
+### Testing
 
-This project does not have a traditional test suite. Testing is done through:
+Rust: inline unit tests per module plus integration targets under
+`crates/*/tests/`. Both walker backends must compile and pass; `zlob` is the CI
+feature, `ripgrep` is the default.
 
 - Create e2e local test file for Neovim: Load any Lua test file with `nvim -l <test_file>`
-- Write inline rust unit tests for any functionality that is standalone and scoped within a single function
+
+Two `watch::rescan_tests` tests fail on Windows with `PermissionDenied` (they
+need a real POSIX rename); they pass on CI.
 
 ### Code Quality
 
-- `make lint` - Rust linting and code analysis
-- `make format` - Format all code 
-- `make test` - Run unit tests (limited coverage, primarily integration testing)
+- `tools/check.ps1 -Mode lint` - clippy plus the comment rules below
+- `tools/check.ps1 -Mode comments` - the mechanical half of the style guide
+
+Comment length and "no doc comments on private items" are checked by
+`tools/check-comments.ps1` against `tools/comment-baseline.txt`. Fixing a
+violation is always welcome; rerun that script with `-WriteBaseline` afterwards
+to shrink the ratchet. Everything else in the style guide is a judgement call
+for the reviewer.
 
 When doing code make sure to REDUCE SIZE OF COMMENTS. This is very important. Every comment should be concise 1-2 liner maximum 4 lines if describes really extensive and unnatural concept.
 
@@ -55,6 +73,8 @@ There are 2 databases:
 
 ### Key Files
 
+Lua side:
+
 - `lua/fff.lua` - Entry point, delegates to main.lua
 - `lua/fff/main.lua` - Public API (find_files, search, change_directory)
 - `lua/fff/core.lua` - Initialization, autocmds, global state management
@@ -64,30 +84,40 @@ There are 2 databases:
 - `lua/fff/conf.lua` - Default config
 - `lua/fff/rust/init.lua` - Loads compiled Rust shared library
 
-**Rust Side:**
+Rust side is a workspace under `crates/`. The engine is `fff-core`
+(package name `fff-search`):
 
-- `lua/fff/rust/lib.rs` - FFI bindings, global state (FILE_PICKER, FRECENCY)
-- `lua/fff/rust/file_picker.rs` - Core FilePicker struct, indexing, background watcher
-- `lua/fff/rust/frecency.rs` - Frecency database (LMDB) and scoring
-- `lua/fff/rust/query_tracker.rs` - Search query history tracking
-- `lua/fff/rust/score.rs` - Fuzzy match scoring with frizbee integration
-- `lua/fff/rust/git.rs` - Git status caching and repository detection
-- `lua/fff/rust/background_watcher.rs` - File system watcher thread
+- `crates/fff-core/src/file_picker.rs` - Core FilePicker struct, indexing, background watcher
+- `crates/fff-core/src/scan.rs` - Scan pipeline: walk, commit, post-scan index
+- `crates/fff-core/src/types.rs` - `FileItem`, `DirItem`, flags, content cache budget
+- `crates/fff-core/src/simd_path.rs` - Chunked path arena (relative, `/`-canonical)
+- `crates/fff-core/src/index/bigram_filter.rs` - Content index build and query
+- `crates/fff-core/src/index/bigram_row.rs` - Persisted per-file bigram row codec
+- `crates/fff-core/src/dbs/` - LMDB stores: frecency, query history, snapshot
+- `crates/fff-core/src/walk/` - Two backends: `zlob.rs`, `ripgrep.rs`
+- `crates/fff-core/src/score.rs` - Fuzzy match scoring with frizbee integration
+- `crates/fff-core/src/git.rs` - Git status caching and repository detection
+- `crates/fff-nvim/src/lib.rs` - FFI bindings and process-wide statics (FILE_PICKER, FRECENCY)
+- `crates/fff-mcp-http/` - The multi-root HTTP service; see its README and `GLOSSARY.md`
 
 ### Scoring Algorithm
 
-Located at the score.rs file
+Located at `crates/fff-core/src/score.rs`.
+
+### Persisted state
+
+Vocabulary for the on-disk content-index cache is in `GLOSSARY.md`; the decision
+and its rejected alternatives are in `docs/adr/0001-per-file-bigram-snapshot.md`.
+`crates/fff-mcp-http/README.md` documents the flags and the `/stats` section.
 
 ### Build System
 
-- `Cargo.toml` - Rust dependencies and build configuration (package name: `fff_nvim`)
+- `Cargo.toml` - workspace root; the engine crate is `fff-search`
 - `rust-toolchain.toml` - Specifies Rust nightly toolchain with required components
 - `Cross.toml` - Cross-compilation settings using Zig for Linux targets
 - **CI/CD Workflows**:
-  - `.github/workflows/rust.yml` - Rust testing, formatting, and clippy checks
-  - `.github/workflows/release.yaml` - Automated multi-platform builds
-  - `.github/workflows/stylua.yaml` - Lua code formatting validation
-  - `.github/workflows/nix.yml` - Nix build validation
+  - `.github/workflows/rust.yml` - fmt, clippy, comment rules, tests
+  - `.github/workflows/performance*.yml` - Criterion benchmark comparison per PR
 - **Cross-compilation Support**: Uses `cross` tool with Zig backend for efficient cross-compilation
 
 ## Development Notes

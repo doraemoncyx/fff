@@ -10,9 +10,8 @@ pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(path)
 }
 
-/// The index stores relative paths with `/` on every platform. These helpers
-/// convert between that canonical form and the OS-native separator, and are
-/// no-ops on non-Windows where `/` is already native.
+// The index stores relative paths with `/` on every platform. These helpers
+// convert between that canonical form and the OS-native separator.
 
 /// Fold a relative path to the canonical `/` form (no-op off Windows).
 #[cfg(windows)]
@@ -62,7 +61,7 @@ pub fn normalize(path: PathBuf) -> PathBuf {
 
 #[cfg(windows)]
 pub fn expand_tilde(path: &str) -> PathBuf {
-    return PathBuf::from(path);
+    PathBuf::from(path)
 }
 
 #[cfg(not(windows))]

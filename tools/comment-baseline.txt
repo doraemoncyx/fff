@@ -1,0 +1,728 @@
+crates\fff-c\src\accessors.rs|long-comment|5 lines
+crates\fff-c\src\accessors.rs|long-comment|6 lines
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_access_frecency_score(item: *const FffFileItem) -> i64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_file_name(item: *const FffFileItem) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_git_status(item: *const FffFileItem) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_is_binary(item: *const FffFileItem) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_modification_frecency_score(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_modified(item: *const FffFileItem) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_relative_path(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_size(item: *const FffFileItem) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_file_item_get_total_frecency_score(item: *const FffFileItem) -> i64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_access_frecency_score(m: *const FffGrepMatch) -> i64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_byte_offset(m: *const FffGrepMatch) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_col(m: *const FffGrepMatch) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_context_after_count(m: *const FffGrepMatch) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_context_after(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_context_before_count(m: *const FffGrepMatch) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_context_before(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_file_name(m: *const FffGrepMatch) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_fuzzy_score(m: *const FffGrepMatch) -> u16 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_git_status(m: *const FffGrepMatch) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_has_fuzzy_score(m: *const FffGrepMatch) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_is_binary(m: *const FffGrepMatch) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_is_definition(m: *const FffGrepMatch) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_line_content(m: *const FffGrepMatch) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_line_number(m: *const FffGrepMatch) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_match_range(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_match_ranges_count(m: *const FffGrepMatch) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_modification_frecency_score(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_modified(m: *const FffGrepMatch) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_relative_path(m: *const FffGrepMatch) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_size(m: *const FffGrepMatch) -> u64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_match_get_total_frecency_score(m: *const FffGrepMatch) -> i64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_count(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_filtered_file_count(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_next_file_offset(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_regex_fallback_error(
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_total_files_searched(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_total_files(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_total_matched(r: *const FffGrepResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_result_get_error(result: *const FffResult) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_result_get_handle(result: *const FffResult) -> *mut std::ffi::c_void {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_result_get_int_value(result: *const FffResult) -> i64 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_result_get_success(result: *const FffResult) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_base_score(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_combo_match_boost(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_current_file_penalty(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_distance_penalty(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_exact_match(s: *const FffScore) -> bool {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_filename_bonus(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_frecency_boost(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_match_type(s: *const FffScore) -> *const c_char {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_path_alignment_bonus(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_special_filename_bonus(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_score_get_total(s: *const FffScore) -> i32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_search_result_get_count(r: *const FffSearchResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_search_result_get_total_files(r: *const FffSearchResult) -> u32 {
+crates\fff-c\src\accessors.rs|private-doc|pub unsafe extern "C" fn fff_search_result_get_total_matched(r: *const FffSearchResult) -> u32 {
+crates\fff-c\src\ffi_types.rs|long-comment|24 lines
+crates\fff-c\src\ffi_types.rs|private-doc|fn cstring_new(s: &str) -> *mut c_char {
+crates\fff-c\src\ffi_types.rs|private-doc|fn strings_to_raw(v: &[String]) -> (*mut *mut c_char, u32) {
+crates\fff-c\src\ffi_types.rs|private-doc|fn vec_to_raw<T>(v: Vec<T>) -> (*mut T, u32) {
+crates\fff-c\src\ffi_types.rs|private-doc|pub unsafe fn free_fields(&mut self) {
+crates\fff-c\src\ffi_types.rs|private-doc|pub unsafe fn free_strings(&mut self) {
+crates\fff-c\src\ffi_types.rs|private-doc|unsafe fn free_cstring_array(arr: *mut *mut c_char, count: u32) {
+crates\fff-c\src\lib.rs|long-comment|11 lines
+crates\fff-c\src\lib.rs|long-comment|12 lines
+crates\fff-c\src\lib.rs|long-comment|5 lines
+crates\fff-c\src\lib.rs|long-comment|6 lines
+crates\fff-c\src\lib.rs|long-comment|8 lines
+crates\fff-c\src\lib.rs|long-comment|9 lines
+crates\fff-c\src\lib.rs|private-doc|fn default_u32(val: u32, default: u32) -> u32 {
+crates\fff-c\src\lib.rs|private-doc|fn grep_mode_from_u8(mode: u8) -> fff::GrepMode {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_create_instance_with(opts: *const FffCreateOptions) -> *mut FffResult {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_destroy(fff_handle: *mut c_void) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_dir_search_result_get_item(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_dir_search_result_get_score(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_dir_search_result(result: *mut FffDirSearchResult) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_grep_result(result: *mut FffGrepResult) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_mixed_search_result(result: *mut FffMixedSearchResult) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_result(result_ptr: *mut FffResult) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_scan_progress(result: *mut FffScanProgress) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_search_result(result: *mut FffSearchResult) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_free_string(s: *mut c_char) {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_get_base_path(fff_handle: *mut c_void) -> *mut FffResult {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_get_historical_query(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_get_scan_progress(fff_handle: *mut c_void) -> *mut FffResult {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_glob(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_grep_result_get_match(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_health_check(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_is_scanning(fff_handle: *mut c_void) -> bool {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_live_grep_ex(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_live_grep(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_mixed_search_result_get_item(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_mixed_search_result_get_score(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_multi_grep_ex(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_multi_grep(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_ptr_offset(base: *const c_void, byte_offset: usize) -> *const c_void {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_refresh_git_status(fff_handle: *mut c_void) -> *mut FffResult {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_restart_index(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_scan_files(fff_handle: *mut c_void) -> *mut FffResult {
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_search_directories(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_search_mixed(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_search_result_get_item(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_search_result_get_score(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_search(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_track_query(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_wait_for_scan(
+crates\fff-c\src\lib.rs|private-doc|pub unsafe extern "C" fn fff_wait_for_watcher(
+crates\fff-c\src\lib.rs|private-doc|pub(crate) unsafe fn cstr_to_str<'a>(s: *const c_char) -> Option<&'a str> {
+crates\fff-c\src\lib.rs|private-doc|pub(crate) unsafe fn instance_ref<'a>(
+crates\fff-c\src\lib.rs|private-doc|since = "0.8.5",
+crates\fff-c\src\lib.rs|private-doc|struct FffInstance {
+crates\fff-c\src\lib.rs|private-doc|unsafe fn optional_cstr<'a>(s: *const c_char) -> Option<&'a str> {
+crates\fff-c\src\watch.rs|long-comment|10 lines
+crates\fff-c\src\watch.rs|long-comment|12 lines
+crates\fff-c\src\watch.rs|long-comment|5 lines
+crates\fff-c\src\watch.rs|long-comment|7 lines
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_free_watch_events(batch: *mut FffWatchEventBatch) {
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_set_watch_callback(
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_unwatch(fff_handle: *mut c_void, watch_id: u64) -> *mut FffResult {
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch_args(
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch_events_count(batch: *const FffWatchEventBatch) -> u32 {
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch_events_get_from_path(
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch_events_get_kind(
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch_events_get_path(
+crates\fff-c\src\watch.rs|private-doc|pub unsafe extern "C" fn fff_watch(
+crates\fff-core\benches\bigram_bench.rs|private-doc|fn build_test_index(file_count: usize) -> BigramFilter {
+crates\fff-core\benches\glob_bench.rs|private-doc|fn bench_compiled_reuse(c: &mut Criterion) {
+crates\fff-core\benches\glob_bench.rs|private-doc|fn bench_extensions_vs_glob(c: &mut Criterion) {
+crates\fff-core\benches\glob_bench.rs|private-doc|fn bench_full_pipeline(c: &mut Criterion) {
+crates\fff-core\benches\glob_bench.rs|private-doc|fn bench_mixed_pipeline(c: &mut Criterion) {
+crates\fff-core\benches\grep_bench.rs|private-doc|fn setup_repo(dir: &std::path::Path) {
+crates\fff-core\benches\memmem_bench.rs|long-comment|5 lines
+crates\fff-core\build.rs|private-doc|fn zig_available() -> bool {
+crates\fff-core\src\dbs\db_healthcheck.rs|private-doc|fn count_entries(&self) -> Result<Vec<(&'static str, u64)>>;
+crates\fff-core\src\dbs\db_healthcheck.rs|private-doc|fn get_health(&self) -> Result<DbHealth> {
+crates\fff-core\src\dbs\env_pool.rs|long-comment|6 lines
+crates\fff-core\src\dbs\env_pool.rs|private-doc|label: &'static str,
+crates\fff-core\src\dbs\frecency.rs|long-comment|5 lines
+crates\fff-core\src\dbs\frecency.rs|private-doc|fn purge_stale_entries(env: &SharedEnv) -> Result<(usize, usize)> {
+crates\fff-core\src\dbs\lmdb.rs|private-doc|const LABEL: &'static str;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|const MAP_SIZE: usize;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|const MAX_DBS: u32;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|const SIZE_CAP_BYTES: u64;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn env(&self) -> &Env<WithoutTls> {
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn health(&self) -> &DbHealth;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn open_database_safe<KC, DC>(env: &SharedEnv, name: Option<&str>) -> Result<Database<KC, DC>>
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn open_env(db_path: &Path) -> Result<(SharedEnv, DbHealth)> {
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn purge_stale_data(_env: &SharedEnv) -> Result<()> {
+crates\fff-core\src\dbs\lmdb.rs|private-doc|fn shared_env(&self) -> &SharedEnv;
+crates\fff-core\src\dbs\lmdb.rs|private-doc|pub(crate) fn spawn_lmdb_gc<T: LmdbStore>(shared: Arc<RwLock<Option<T>>>) {
+crates\fff-core\src\dbs\query_tracker.rs|private-doc|fn append_to_history(
+crates\fff-core\src\dbs\query_tracker.rs|private-doc|fn read_history_at_offset(
+crates\fff-core\src\dbs\query_tracker.rs|private-doc|struct HistoryEntry {
+crates\fff-core\src\file_picker.rs|long-comment|10 lines
+crates\fff-core\src\file_picker.rs|long-comment|11 lines
+crates\fff-core\src\file_picker.rs|long-comment|13 lines
+crates\fff-core\src\file_picker.rs|long-comment|17 lines
+crates\fff-core\src\file_picker.rs|long-comment|29 lines
+crates\fff-core\src\file_picker.rs|long-comment|5 lines
+crates\fff-core\src\file_picker.rs|long-comment|6 lines
+crates\fff-core\src\file_picker.rs|long-comment|7 lines
+crates\fff-core\src\file_picker.rs|long-comment|8 lines
+crates\fff-core\src\file_picker.rs|long-comment|9 lines
+crates\fff-core\src\file_picker.rs|private-doc|chunked_paths: Option<Arc<crate::simd_path::ChunkedPathStore>>,
+crates\fff-core\src\file_picker.rs|private-doc|dirs: StableVec<DirItem>,
+crates\fff-core\src\file_picker.rs|private-doc|files: StableVec<FileItem>,
+crates\fff-core\src\file_picker.rs|private-doc|fn canonical_relative_path(path: &Path, base: &Path) -> Option<String> {
+crates\fff-core\src\file_picker.rs|private-doc|fn common_dir_prefix_len(a: &str, b: &str) -> usize {
+crates\fff-core\src\file_picker.rs|private-doc|fn expand_symlink_dir_into(
+crates\fff-core\src\file_picker.rs|private-doc|fn expand_symlink_dir_pairs(
+crates\fff-core\src\file_picker.rs|private-doc|fn extract_watch_dirs_includes_pure_ancestor_dirs() {
+crates\fff-core\src\file_picker.rs|private-doc|fn find_dir_index(&self, dir_rel: &str) -> Option<usize> {
+crates\fff-core\src\file_picker.rs|private-doc|fn find_or_add_dir(&mut self, dir_rel: &str) -> Option<u32> {
+crates\fff-core\src\file_picker.rs|private-doc|fn for_each_dir_includes_empty_directories() {
+crates\fff-core\src\file_picker.rs|private-doc|fn new_with_metadata(
+crates\fff-core\src\file_picker.rs|private-doc|fn populates_dirs_files_chunked_storage<'a>(
+crates\fff-core\src\file_picker.rs|private-doc|fn rel_is_non_code_dir(rel: &str) -> bool {
+crates\fff-core\src\file_picker.rs|private-doc|fn revive_dir(&mut self, dir_idx: u32) {
+crates\fff-core\src\file_picker.rs|private-doc|fn to_relative_path<'a>(&self, path: &'a Path) -> Option<std::borrow::Cow<'a, str>> {
+crates\fff-core\src\file_picker.rs|private-doc|fn tombstone_dirs_with_arena<F>(&mut self, mut predicate: F)
+crates\fff-core\src\file_picker.rs|private-doc|live_dirs_count: usize,
+crates\fff-core\src\file_picker.rs|private-doc|overflow_builder: Option<crate::simd_path::ChunkedPathStoreBuilder>,
+crates\fff-core\src\file_picker.rs|private-doc|pub extern "C" fn tune_mimalloc() {
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn hint_allocator_collect() {
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn ignore_rules(&self) -> Option<Arc<crate::walk::WalkIgnoreRules>> {
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn is_known_binary_extension_basename(name: &str) -> bool {
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn remove_all_files_in_dirs_with_callback<'a>(
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn update_git_statuses(
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn walk_filesystem(
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) fn warmup_mmaps(
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) git_status_worker: Arc<crate::git_status_worker::GitStatusWorker>,
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) ignore_rules: Option<Arc<crate::walk::WalkIgnoreRules>>,
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) live_count: usize,
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) struct PostScanUnsafeSnapshot {
+crates\fff-core\src\file_picker.rs|private-doc|pub(crate) unsafe fn post_scan_snapshot(&self) -> Option<PostScanUnsafeSnapshot> {
+crates\fff-core\src\git_status_worker.rs|private-doc|pub(crate) struct GitStatusWorker {
+crates\fff-core\src\git.rs|long-comment|6 lines
+crates\fff-core\src\git.rs|long-comment|7 lines
+crates\fff-core\src\git.rs|private-doc|fn lookup_is_case_exact_regardless_of_libgit2_sort_order() {
+crates\fff-core\src\git.rs|private-doc|pub(crate) fn initial_scan_status_options() -> StatusOptions {
+crates\fff-core\src\git.rs|private-doc|pub(crate) fn read_full_status(repo: &Repository) -> Result<Self> {
+crates\fff-core\src\git.rs|private-doc|pub(crate) fn tune_libgit2_for_local_reads() {
+crates\fff-core\src\grep\classify.rs|long-comment|6 lines
+crates\fff-core\src\grep\classify.rs|private-doc|const DEF_KEYWORDS: &[&[u8]] = &[
+crates\fff-core\src\grep\classify.rs|private-doc|const MODIFIERS: &[&[u8]] = &[
+crates\fff-core\src\grep\classify.rs|private-doc|fn is_definition_keyword(s: &[u8]) -> bool {
+crates\fff-core\src\grep\classify.rs|private-doc|fn skip_modifiers(mut s: &[u8]) -> &[u8] {
+crates\fff-core\src\grep\classify.rs|private-doc|fn skip_ws(s: &[u8]) -> &[u8] {
+crates\fff-core\src\grep\classify.rs|private-doc|fn starts_with_include(s: &[u8]) -> bool {
+crates\fff-core\src\grep\classify.rs|private-doc|fn starts_with_require(s: &[u8]) -> bool {
+crates\fff-core\src\grep\fuzzy_grep.rs|long-comment|5 lines
+crates\fff-core\src\grep\fuzzy_grep.rs|long-comment|6 lines
+crates\fff-core\src\grep\fuzzy_grep.rs|long-comment|9 lines
+crates\fff-core\src\grep\grep_tests.rs|long-comment|5 lines
+crates\fff-core\src\grep\grep_tests.rs|long-comment|6 lines
+crates\fff-core\src\grep\grep_tests.rs|private-doc|fn regex_fallback_keeps_file_path_scope_issue_756() {
+crates\fff-core\src\grep\grep_tests.rs|private-doc|fn test_grep_multiline_and_escaped_newline_e2e() {
+crates\fff-core\src\grep\grep_tests.rs|private-doc|fn test_grep_no_duplicates_with_overflow_trailing_bits() {
+crates\fff-core\src\grep\grep.rs|long-comment|5 lines
+crates\fff-core\src\grep\grep.rs|long-comment|7 lines
+crates\fff-core\src\grep\grep.rs|private-doc|CaseInsensitive(&'a [u8]),
+crates\fff-core\src\grep\grep.rs|private-doc|fn eq_fold(&self, haystack: &[u8], needle_seg: &[u8]) -> bool {
+crates\fff-core\src\grep\grep.rs|private-doc|fn extract_grep_text(query: &FFFQuery<'_>) -> String {
+crates\fff-core\src\grep\grep.rs|private-doc|fn for_each_occurrence(&self, haystack: &[u8], mut on_match: impl FnMut(usize)) {
+crates\fff-core\src\grep\grep.rs|private-doc|pub(crate) fn grep_search<'a>(
+crates\fff-core\src\grep\grep.rs|private-doc|pub(super) fn replace_newline_escapes(text: &str) -> Option<(String, usize)> {
+crates\fff-core\src\grep\multi_pattern.rs|long-comment|7 lines
+crates\fff-core\src\grep\multi_pattern.rs|private-doc|pub(crate) fn multi_grep_search<'a>(
+crates\fff-core\src\grep\multi_pattern.rs|private-doc|struct AhoCorasickMatcher<'a> {
+crates\fff-core\src\grep\multi_pattern.rs|private-doc|struct AhoCorasickSink<'a> {
+crates\fff-core\src\grep\prefilter.rs|private-doc|pub(super) fn prefilter_files<'a>(
+crates\fff-core\src\grep\prefilter.rs|private-doc|pub(super) fn prefilter_with_filepath_retry<'a>(
+crates\fff-core\src\grep\sink.rs|private-doc|pub(super) const MAX_LINE_DISPLAY_LEN: usize = 512;
+crates\fff-core\src\grep\sink.rs|private-doc|pub(super) fn extract_context(&self, mat: &SinkMatch<'_>) -> (Vec<String>, Vec<String>) {
+crates\fff-core\src\grep\sink.rs|private-doc|pub(super) fn split_multiline_blob(display_bytes: &[u8]) -> (&[u8], Vec<String>) {
+crates\fff-core\src\grep\sink.rs|private-doc|pub(super) fn truncate_display_bytes(bytes: &[u8]) -> &[u8] {
+crates\fff-core\src\grep\types.rs|long-comment|6 lines
+crates\fff-core\src\grep\types.rs|private-doc|Fuzzy,
+crates\fff-core\src\grep\types.rs|private-doc|PlainText,
+crates\fff-core\src\grep\types.rs|private-doc|pub(crate) fn empty(total_files: usize, filtered_file_count: usize) -> Self {
+crates\fff-core\src\grep\types.rs|private-doc|Regex,
+crates\fff-core\src\grep\types.rs|private-doc|Smart,
+crates\fff-core\src\ignore.rs|private-doc|pub(crate) const IGNORED_DIRS: &[&str] = &[
+crates\fff-core\src\index\bigram_filter.rs|long-comment|5 lines
+crates\fff-core\src\index\bigram_filter.rs|long-comment|6 lines
+crates\fff-core\src\index\bigram_filter.rs|private-doc|base_file_count: usize,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|col_data: OnceLock<Option<UnsafeCell<ColumnSlab>>>,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|const LONG_CONTENT_MIN_LEN: usize = 1024;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|const NO_COLUMN: u16 = u16::MAX;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|const PARALLEL_ENCODE_MIN_WORDS: usize = 1 << 16;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|const SEEN_WORDS: usize = 1024;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|dense_data: ColumnSlab, // do not try to change this to u8 it has to be wordsize
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn a_skipped_file_does_not_drop_the_rest_of_its_chunk() {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn bitset_and(result: &mut [u64], bitset: &[u64]) {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn builder_has_key_for_file_0(b: &BigramIndexBuilder, k: u16) -> bool {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn col_data_cell(&self) -> Option<&UnsafeCell<ColumnSlab>> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn col_data_ptr(&self) -> Option<*mut u64> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn column_bitset(&self, col: u16) -> &[u64] {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn expected_bigrams(content: &[u8]) -> (Vec<u16>, Vec<u16>) {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn key(a: u8, b: u8) -> u16 {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn normalize_byte_scalar(b: u8) -> u8 {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn normalize_bytes(src: &[u8], dst: &mut [u8]) {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn open_base_dir_fd(base_path: &std::path::Path) -> libc::c_int {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn query_skip(&self, pattern: &[u8]) -> Option<Vec<u64>> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|fn read_bigram_chunk<'a>(
+crates\fff-core\src\index\bigram_filter.rs|private-doc|modified: AHashMap<usize, Vec<u16>>,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) const MAX_BIGRAM_COLUMNS: usize = 5000;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) const SKIP_INDEX_MIN_DENSITY_PCT: u32 = 12;
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) enum ColumnRef<'a> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn base_file_count(&self) -> usize {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn column_bitset(&self, key: u16) -> Option<std::borrow::Cow<'_, [u64]>> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn column_ref(&self, key: u16) -> Option<ColumnRef<'_>> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn modified_indices(&self) -> Vec<usize> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn query_modified(&self, pattern_bigrams: &[u16]) -> Vec<usize> {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn release_thread_buffers() {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) fn tombstones(&self) -> &[u64] {
+crates\fff-core\src\index\bigram_filter.rs|private-doc|pub(crate) sniffed: u64,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|skip_index: Option<Box<BigramFilter>>,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|sparse_offsets: Vec<u32>,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|static READ_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+crates\fff-core\src\index\bigram_filter.rs|private-doc|tombstones: Vec<u64>,
+crates\fff-core\src\index\bigram_filter.rs|private-doc|unsafe fn normalize_bytes_avx2(src: &[u8], dst: &mut [u8]) {
+crates\fff-core\src\index\bigram_query.rs|long-comment|7 lines
+crates\fff-core\src\index\bigram_query.rs|private-doc|And(Vec<BigramQuery>),
+crates\fff-core\src\index\bigram_query.rs|private-doc|Consec(u16),
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn bitset_and(a: &mut [u64], b: &[u64]) {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn bitset_or(a: &mut [u64], b: &[u64]) {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn build_test_index(files: &[&[u8]]) -> BigramFilter {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn combine(
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn common_regex_patterns() {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn decompose_literal(bytes: &[u8]) -> HirInfo {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn push_cross_consec(qs: &mut Vec<BigramQuery>, last: Option<&[u8]>, first: Option<&[u8]>) {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn push_cross_skip1(qs: &mut Vec<BigramQuery>, last: Option<&[u8]>, first: Option<&[u8]>) {
+crates\fff-core\src\index\bigram_query.rs|private-doc|fn push(&mut self, b: u8) {
+crates\fff-core\src\index\bigram_query.rs|private-doc|Or(Vec<BigramQuery>),
+crates\fff-core\src\index\bigram_query.rs|private-doc|pub(crate) fn fuzzy_to_bigram_query(query: &str, num_probes: usize) -> BigramQuery {
+crates\fff-core\src\index\bigram_query.rs|private-doc|Skip1(u16),
+crates\fff-core\src\index\bigram_query.rs|private-doc|type Bg = (&'static str, bool);
+crates\fff-core\src\index\candidates.rs|long-comment|5 lines
+crates\fff-core\src\index\candidates.rs|private-doc|const FUZZY_PROBE_COUNT: usize = 7;
+crates\fff-core\src\index\candidates.rs|private-doc|pub(crate) fn bigram_boundary(overlay: Option<&BigramOverlay>, files_len: usize) -> usize {
+crates\fff-core\src\index\candidates.rs|private-doc|pub(crate) fn fuzzy_candidates(
+crates\fff-core\src\index\candidates.rs|private-doc|pub(crate) fn literal_candidates(
+crates\fff-core\src\index\candidates.rs|private-doc|pub(crate) fn regex_candidates(
+crates\fff-core\src\index\constraints.rs|long-comment|6 lines
+crates\fff-core\src\index\constraints.rs|long-comment|8 lines
+crates\fff-core\src\index\constraints.rs|private-doc|const GLOB_FLAGS: zlob::ZlobFlags = zlob::ZlobFlags::RECOMMENDED
+crates\fff-core\src\index\constraints.rs|private-doc|enum GlobStrategy {
+crates\fff-core\src\index\constraints.rs|private-doc|extensions: SmallVec<[&'q str; 8]>,
+crates\fff-core\src\index\constraints.rs|private-doc|fn build_glob_strategy<T: Constrainable>(
+crates\fff-core\src\index\constraints.rs|private-doc|fn is_glob_node(c: &Constraint<'_>) -> bool {
+crates\fff-core\src\index\constraints.rs|private-doc|fn is_path_sep(b: u8) -> bool {
+crates\fff-core\src\index\constraints.rs|private-doc|fn match_glob_pattern(pattern: &str, paths: &[&str]) -> Vec<bool> {
+crates\fff-core\src\index\constraints.rs|private-doc|fn walk_globs<F: FnMut(&str)>(c: &Constraint<'_>, f: &mut F) {
+crates\fff-core\src\index\constraints.rs|private-doc|Inline(Vec<Option<GlobPattern>>),
+crates\fff-core\src\index\constraints.rs|private-doc|None,
+crates\fff-core\src\index\constraints.rs|private-doc|Prepass(Vec<Vec<bool>>),
+crates\fff-core\src\index\constraints.rs|private-doc|pub(crate) fn apply_constraints<'a, T: Constrainable + Sync>(
+crates\fff-core\src\index\constraints.rs|private-doc|pub(crate) fn glob_matches_into(p: &GlobPattern, rels: &[&str], out: &mut Vec<usize>) {
+crates\fff-core\src\index\constraints.rs|private-doc|pub(crate) struct ConstraintPlan<'q, 'c> {
+crates\fff-core\src\index\constraints.rs|private-doc|rest: SmallVec<[&'c Constraint<'q>; 8]>,
+crates\fff-core\src\index\constraints.rs|private-doc|struct PathBuffer {
+crates\fff-core\src\lib.rs|long-comment|98 lines
+crates\fff-core\src\log.rs|private-doc|const DEFAULT_RETAIN_RUNS: usize = 20;
+crates\fff-core\src\rescan_stats.rs|private-doc|EventBatchOverflow,
+crates\fff-core\src\rescan_stats.rs|private-doc|Explicit,
+crates\fff-core\src\rescan_stats.rs|private-doc|IgnoreFileChanged,
+crates\fff-core\src\rescan_stats.rs|private-doc|IndexUpdateRejected,
+crates\fff-core\src\rescan_stats.rs|private-doc|KernelEventLoss,
+crates\fff-core\src\rescan_stats.rs|private-doc|OverflowCapacity,
+crates\fff-core\src\rescan_throttle.rs|private-doc|pub(crate) fn admit(&self, live_files: usize, has_git_repo: bool) -> bool {
+crates\fff-core\src\rescan_throttle.rs|private-doc|pub(crate) fn note_explicit_scan(&self) {
+crates\fff-core\src\scan.rs|long-comment|5 lines
+crates\fff-core\src\scan.rs|long-comment|8 lines
+crates\fff-core\src\scan.rs|private-doc|fn rescubscribe_watcher_post_scan(shared_picker: &SharedFilePicker) {
+crates\fff-core\src\scan.rs|private-doc|fn run_post_scan(
+crates\fff-core\src\scan.rs|private-doc|pub(crate) cancelled: Arc<AtomicBool>,
+crates\fff-core\src\scan.rs|private-doc|pub(crate) post_scan_indexing_active: Arc<AtomicBool>,
+crates\fff-core\src\scan.rs|private-doc|pub(crate) rescan_pending: Arc<AtomicBool>,
+crates\fff-core\src\scan.rs|private-doc|pub(crate) scanning: Arc<AtomicBool>,
+crates\fff-core\src\scan.rs|private-doc|pub(crate) struct ScanConfig {
+crates\fff-core\src\scan.rs|private-doc|pub(crate) struct ScanJob {
+crates\fff-core\src\scan.rs|private-doc|pub(crate) watcher_ready: Arc<AtomicBool>,
+crates\fff-core\src\scan.rs|private-doc|scanned_files_counter: Arc<AtomicUsize>,
+crates\fff-core\src\score.rs|long-comment|5 lines
+crates\fff-core\src\score.rs|private-doc|fn match_fuzzy_parts_dirs(
+crates\fff-core\src\score.rs|private-doc|fn resolve_dir_chunks(
+crates\fff-core\src\score.rs|private-doc|fn resolve_file_chunks(
+crates\fff-core\src\score.rs|private-doc|fn search(files: &[FileItem], query: &str, arena: ArenaPtr) -> Vec<(String, Score)> {
+crates\fff-core\src\score.rs|private-doc|fn sort_and_paginate_dirs<'a>(
+crates\fff-core\src\score.rs|private-doc|fn sort_and_paginate<'a, S>(
+crates\fff-core\src\score.rs|private-doc|fn test_full_path_query_prefers_closer_filename_match() {
+crates\fff-core\src\score.rs|private-doc|fn test_path_longer_than_512_bytes_does_not_panic_and_matches() {
+crates\fff-core\src\score.rs|private-doc|pub(crate) fn fuzzy_match_and_score_dirs<'a>(
+crates\fff-core\src\score.rs|private-doc|pub(crate) fn fuzzy_match_and_score_files<'a>(
+crates\fff-core\src\shared.rs|long-comment|16 lines
+crates\fff-core\src\shared.rs|long-comment|5 lines
+crates\fff-core\src\shared.rs|long-comment|6 lines
+crates\fff-core\src\shared.rs|long-comment|7 lines
+crates\fff-core\src\shared.rs|private-doc|fn poll_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+crates\fff-core\src\shared.rs|private-doc|fn wait_for_git_index_lock_release(git_dir: &Path) {
+crates\fff-core\src\shared.rs|private-doc|pub(crate) fn trigger_full_rescan_with_reason(
+crates\fff-core\src\shared.rs|private-doc|pub(crate) fn upgrade(&self) -> Option<SharedFilePicker> {
+crates\fff-core\src\shared.rs|private-doc|pub(crate) fn weaken(&self) -> WeakFilePicker {
+crates\fff-core\src\shared.rs|private-doc|pub(crate) struct WeakFilePicker(Weak<SharedPickerInner>);
+crates\fff-core\src\shared.rs|private-doc|watchers: Arc<WatchRegistry>,
+crates\fff-core\src\simd_path.rs|private-doc|pub(crate) const MAX_PATH_CHUNKS: usize = PATH_BUF_SIZE.div_ceil(SIMD_CHUNK_BYTES);
+crates\fff-core\src\simd_path.rs|private-doc|pub(crate) const SIMD_CHUNK_BYTES: usize = 16;
+crates\fff-core\src\simd_path.rs|private-doc|pub(crate) struct ChunkedPathStoreBuilder {
+crates\fff-core\src\simd_path.rs|private-doc|pub(crate) struct ChunkedString {
+crates\fff-core\src\simd_string_utils\case.rs|long-comment|5 lines
+crates\fff-core\src\simd_string_utils\case.rs|private-doc|pub(crate) unsafe fn eq_lowered_case(haystack: *const u8, needle_lower: &[u8]) -> bool {
+crates\fff-core\src\simd_string_utils\case.rs|private-doc|unsafe fn eq_lowered_avx2(h: *const u8, needle_lower: &[u8]) -> bool {
+crates\fff-core\src\simd_string_utils\case.rs|private-doc|unsafe fn eq_lowered_neon_dotprod(h: *const u8, needle_lower: &[u8]) -> bool {
+crates\fff-core\src\simd_string_utils\memmem.rs|private-doc|fn select_rare_pair(needle_lower: &[u8]) -> (usize, usize) {
+crates\fff-core\src\simd_string_utils\memmem.rs|private-doc|unsafe fn find_packed_pair_avx2(
+crates\fff-core\src\simd_string_utils\memmem.rs|private-doc|unsafe fn neon_movemask(v: core::arch::aarch64::uint8x16_t) -> u16 {
+crates\fff-core\src\stable_vec.rs|long-comment|10 lines
+crates\fff-core\src\stable_vec.rs|long-comment|7 lines
+crates\fff-core\src\stable_vec.rs|private-doc|fn deref_mut(&mut self) -> &mut [T] {
+crates\fff-core\src\stable_vec.rs|private-doc|len: AtomicUsize,
+crates\fff-core\src\stable_vec.rs|private-doc|pub(crate) struct StableVec<T> {
+crates\fff-core\src\types.rs|long-comment|12 lines
+crates\fff-core\src\types.rs|long-comment|6 lines
+crates\fff-core\src\types.rs|long-comment|7 lines
+crates\fff-core\src\types.rs|private-doc|content: AtomicPtr<memmap2::Mmap>,
+crates\fff-core\src\types.rs|private-doc|fn arena_for(&self, file: &FileItem) -> ArenaPtr;
+crates\fff-core\src\types.rs|private-doc|fn base_arena(&self) -> ArenaPtr;
+crates\fff-core\src\types.rs|private-doc|fn overflow_arena(&self) -> ArenaPtr;
+crates\fff-core\src\types.rs|private-doc|last_segment_offset: u16,
+crates\fff-core\src\types.rs|private-doc|max_access_frecency: AtomicI32,
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn detect_binary_content(content: &[u8]) -> bool {
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn detect_binary_per_byte(&self, path: &Path, chunk: &mut [u8]) {
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn get_cached_content(
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn new_overflow(
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn read_trimmed_into_buf(
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn set_deleted(&mut self, deleted: bool) -> bool {
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn write_absolute_path<'a>(
+crates\fff-core\src\types.rs|private-doc|pub(crate) fn write_relative_cstr<'a>(
+crates\fff-core\src\walk\mod.rs|long-comment|6 lines
+crates\fff-core\src\walk\mod.rs|private-doc|pub(crate) dirs: Vec<String>,
+crates\fff-core\src\walk\mod.rs|private-doc|pub(crate) fn is_ignored(&self, relative_path: &Path) -> bool {
+crates\fff-core\src\walk\mod.rs|private-doc|pub(crate) pairs: Vec<(FileItem, String, u64)>,
+crates\fff-core\src\watcher\background_watcher.rs|long-comment|11 lines
+crates\fff-core\src\watcher\background_watcher.rs|long-comment|14 lines
+crates\fff-core\src\watcher\background_watcher.rs|long-comment|5 lines
+crates\fff-core\src\watcher\background_watcher.rs|long-comment|6 lines
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|const AI_MODE_COOLDOWN_SECS: u64 = 5 * 60;
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|fn is_ignored(&self, path: &Path) -> bool {
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|IndexNewDir(PathBuf),
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|repo: Option<&'a Repository>,
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|rules: Option<Arc<crate::walk::WalkIgnoreRules>>,
+crates\fff-core\src\watcher\background_watcher.rs|private-doc|Subscribe(PathBuf),
+crates\fff-core\src\watcher\watch.rs|private-doc|fn start(&self) -> Result<(), Error> {
+crates\fff-core\src\watcher\watch.rs|private-doc|Renamed = 4,
+crates\fff-core\src\watcher\watch.rs|private-doc|Rescan = 3,
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|long-comment|10 lines
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|long-comment|11 lines
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|long-comment|14 lines
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|long-comment|6 lines
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|long-comment|9 lines
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_full_lifecycle_seed_edit_commit_rescan_edit() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_fuzzy_and_grep_combined() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_fuzzy_grep_finds_overflow_files() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_fuzzy_search_after_rescan() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_fuzzy_search_base_overflow_and_deleted() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_long_session_incremental_edits() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_mixed_tombstones_and_overflow() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_nested_directory_edits() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_overflow_file_edit_and_delete() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_overflow_files_searchable_via_grep() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_proves_contribution_for_modified_base() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_rapid_create_delete_same_base_path() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_rescan_after_git_commit() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_resurrect_tombstoned_file() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn bigram_overlay_coherence_stress_base_edits_and_deletes() {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn fuzzy_search_paths(picker: &FilePicker, query: &str) -> Vec<String> {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn seed_realistic_repo(dir: &Path) -> Vec<(String, String)> {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn wait_for_bigram(shared_picker: &SharedFilePicker) {
+crates\fff-core\tests\bigram_overlay_coherence_test.rs|private-doc|fn write_file_with_token(dir: &Path, name: &str, token: &str) {
+crates\fff-core\tests\bigram_overlay_integration.rs|private-doc|fn deleted_file_excluded_via_overlay() {
+crates\fff-core\tests\bigram_overlay_integration.rs|private-doc|fn modified_file_findable_via_overlay() {
+crates\fff-core\tests\bigram_overlay_integration.rs|private-doc|fn modified_file_findable_via_regex_overlay() {
+crates\fff-core\tests\bigram_overlay_integration.rs|private-doc|fn new_file_findable_after_add() {
+crates\fff-core\tests\dir_index_consistency_test.rs|private-doc|fn empty_directory_at_scan_is_searchable_and_watched() {
+crates\fff-core\tests\dotdir_glob_constraint_test.rs|long-comment|5 lines
+crates\fff-core\tests\drop_during_post_scan.rs|private-doc|fn drop_picker_concurrent_with_search_no_segfault() {
+crates\fff-core\tests\drop_during_post_scan.rs|private-doc|fn drop_picker_during_post_scan_no_segfault() {
+crates\fff-core\tests\drop_during_post_scan.rs|private-doc|fn drop_picker_during_walk_no_segfault() {
+crates\fff-core\tests\drop_during_post_scan.rs|private-doc|fn repeated_init_and_drop_no_segfault() {
+crates\fff-core\tests\fs_delete_handler_test.rs|long-comment|7 lines
+crates\fff-core\tests\fs_delete_handler_test.rs|private-doc|fn debounced_nonrecursive_detects_deletion() {
+crates\fff-core\tests\fs_delete_handler_test.rs|private-doc|fn raw_notify_multi_nonrecursive_detects_deletion() {
+crates\fff-core\tests\fs_delete_handler_test.rs|private-doc|fn raw_notify_nonrecursive_detects_deletion() {
+crates\fff-core\tests\fuzz_file_operations.rs|long-comment|5 lines
+crates\fff-core\tests\fuzz_file_operations.rs|long-comment|6 lines
+crates\fff-core\tests\fuzz_file_operations.rs|private-doc|fn build_regex_pattern(token: &str) -> String {
+crates\fff-core\tests\fuzz_file_operations.rs|private-doc|fn drop_during_post_scan_does_not_crash() {
+crates\fff-core\tests\fuzz_file_operations.rs|private-doc|fn extract_stem(name: &str) -> String {
+crates\fff-core\tests\fuzz_file_operations.rs|private-doc|fn regex_escape(s: &str) -> String {
+crates\fff-core\tests\fuzz_file_operations.rs|private-doc|last_write_sec: u64,
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|10 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|11 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|13 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|16 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|17 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|26 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|5 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|55 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|6 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|7 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|8 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|long-comment|9 lines
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|const CONFLICT_CONVERGE_TIMEOUT: Duration = Duration::from_secs(30);
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|const CONVERGE_POLL: Duration = Duration::from_millis(50);
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|const CONVERGE_TIMEOUT: Duration = Duration::from_secs(15);
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|const PER_OP_SETTLE: Duration = Duration::from_millis(10);
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|const REGRESSION_SEED_HEX: &str =
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|Disagree {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|enum AbstractOp {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|ExtraInPicker { path: String, picker: Status },
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn converge_git_status(
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn debug_dump_environment(
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn diff_statuses(
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn expand_u64_seed(seed: u64) -> [u8; 32] {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn expect_file_status(
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn extract_marker(abs: &Path) -> Option<String> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn fingerprint_ops(ops: &[AbstractOp]) -> u64 {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn fuzzy_search_items(shared: &SharedFilePicker, query: &str) -> Vec<(String, Option<Status>)> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn grep_fuzzy_matches(shared: &SharedFilePicker, query: &str) -> Vec<String> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn grep_plain_matches(shared: &SharedFilePicker, query: &str) -> Vec<String> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn grep_regex_matches(shared: &SharedFilePicker, query: &str) -> Vec<String> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn marker_for(seed: u32) -> String {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn ops_from_chacha_seed(seed_hex: &str, min: usize, max: usize) -> Vec<AbstractOp> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn parse_stress_seed() -> u64 {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn probe_real_queries(shared: &SharedFilePicker, live: &[Live]) -> ProbeOutcome {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn probe_single_file_status(shared: &SharedFilePicker, relative: &str) -> Option<Option<Status>> {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn seed_conflict_repo(base: &Path) {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn status_equivalent(truth: Status, picker: Option<Status>) -> bool {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn stem_for_query(relative: &str) -> String {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn stress_random(ops in ops_strategy()) {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn stress_regression_stale_index_after_commit() {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|fn stress_seeded() {
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|relative: String,
+crates\fff-core\tests\fuzz_git_watcher_stress.rs|private-doc|type ProbeOutcome = Option<Result<(), String>>;
+crates\fff-core\tests\fuzz_real_repos.rs|long-comment|5 lines
+crates\fff-core\tests\fuzz_real_repos.rs|private-doc|const CONVERGE_TIMEOUT: Duration = Duration::from_secs(30);
+crates\fff-core\tests\fuzz_real_repos.rs|private-doc|const WATCHER_SETTLE: Duration = Duration::from_millis(100);
+crates\fff-core\tests\fuzz_real_repos.rs|private-doc|fn inject_marker(path: &Path, marker: &str, seed: u32) -> Option<String> {
+crates\fff-core\tests\fuzz_real_repos.rs|private-doc|fn revert_marker(path: &Path, marker: &str, original_line: &str) {
+crates\fff-core\tests\fuzz_real_repos.rs|private-doc|original_line: String,
+crates\fff-core\tests\git_recency_integration.rs|private-doc|fn picker_rooted_in_a_subdirectory_scores_by_index_relative_path() {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn create_picker(base: &Path, specs: &[(&str, &str)]) -> FilePicker {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn fuzzy_opts() -> GrepSearchOptions {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn plain_opts() -> GrepSearchOptions {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn plain_text_not_equals_operator_is_literal() {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn plain_text_smart_case_finds_uppercase_content_with_lowercase_query() {
+crates\fff-core\tests\grep_integration.rs|private-doc|fn regex_opts() -> GrepSearchOptions {
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|const EXTRA_CASES: &[(&str, bool)] = &[
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|const REPRO_COMPONENTS: &[(&str, bool)] = &[
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|fn assert_dirs_indexed(picker: &FilePicker, file_path: &str) {
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|fn assert_offsets_are_char_boundaries(picker: &FilePicker) {
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|fn build_chain(root: &Path, components: &[(&str, bool)]) -> Option<String> {
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|fn build_paths(root: &Path, specs: &[(&str, bool)]) -> Option<()> {
+crates\fff-core\tests\invalid_utf8_paths.rs|private-doc|fn searches_across_invalid_utf8_parents() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|long-comment|22 lines
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|long-comment|5 lines
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|long-comment|8 lines
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|const CHILD_MODE_ENV: &str = "FFF_PARALLEL_OPEN_CLOSE_CHILD";
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn completes_within(
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn fork_child_holding_write_lock(db_path: &Path) -> libc::pid_t {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn frecency_open_blocks_on_fresh_db_when_another_process_holds_write_lock() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn kill_child(pid: libc::pid_t) {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn lmdb_reopen_finds_existing_databases() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn maybe_enter_child_mode() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn query_tracker_many_parallel_open_close_same_path_readers() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn query_tracker_parallel_open_write_close_same_path() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn query_tracker_sequential_reopen_loop_same_path() {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn run_child_from_spec(spec: &str) -> i32 {
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn spawn_open_close_children(
+crates\fff-core\tests\lmdb_stale_lock_deadlock.rs|private-doc|fn wait_all_with_deadline(
+crates\fff-core\tests\new_directory_watcher_test.rs|long-comment|18 lines
+crates\fff-core\tests\new_directory_watcher_test.rs|long-comment|5 lines
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|const WATCHER_TIMEOUT: Duration = Duration::from_secs(10);
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn burst_file_creation_in_new_directory() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn deeply_nested_new_directories_detected() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn file_created_after_directory_watch_established() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn file_created_in_nested_preexisting_empty_directories() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn file_created_in_preexisting_empty_directory() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn gitignored_new_directory_excluded() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn new_directory_and_file_detected_by_watcher() {
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn poll_until(
+crates\fff-core\tests\new_directory_watcher_test.rs|private-doc|fn wait_ready(shared_picker: &SharedFilePicker) {
+crates\fff-core\tests\path_separator_constraint_test.rs|long-comment|6 lines
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn fuzzy_search_with_glob_constraint_matches_on_windows_paths() {
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn fuzzy_search_with_path_segment_constraint() {
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn grep_with_path_segment_constraint_nested() {
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn has_segment(path: &str, segment: &str) -> bool {
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn multi_grep_with_file_path_suffix_constraint() {
+crates\fff-core\tests\path_separator_constraint_test.rs|private-doc|fn multi_grep_with_path_segment_constraint() {
+crates\fff-core\tests\real_binary_fixtures.rs|long-comment|13 lines
+crates\fff-core\tests\real_binary_fixtures.rs|long-comment|7 lines
+crates\fff-core\tests\real_binary_fixtures.rs|private-doc|fn binary_classification_done_before_indexing_wait_returns() {
+crates\fff-core\tests\real_binary_fixtures.rs|private-doc|fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+crates\fff-core\tests\watch_subscription_test.rs|private-doc|fn watch_collect(picker: &SharedFilePicker, pattern: &str, options: WatchOptions) -> Collected {
+crates\fff-core\tests\watcher_stop_under_lock.rs|long-comment|19 lines
+crates\fff-core\tests\watcher_stop_under_lock.rs|long-comment|5 lines
+crates\fff-core\tests\watcher_stop_under_lock.rs|private-doc|fn run_with_deadlock_guard(
+crates\fff-core\tests\watcher_stop_under_lock.rs|private-doc|fn stop_background_monitor_under_write_lock_does_not_deadlock_file_events() {
+crates\fff-core\tests\watcher_stop_under_lock.rs|private-doc|fn stop_background_monitor_under_write_lock_does_not_deadlock_new_dirs() {
+crates\fff-core\tests\watcher_thread_lifecycle_test.rs|private-doc|const WATCHER_OWNER_THREAD_NAME: &str = "fff-watcher-own";
+crates\fff-core\tests\watcher_thread_lifecycle_test.rs|private-doc|fn count_live_threads_named(name: &str) -> usize {
+crates\fff-core\tests\watcher_thread_lifecycle_test.rs|private-doc|fn wait_for_thread_count(name: &str, expected: usize, timeout: Duration) -> usize {
+crates\fff-grep\src\lines.rs|long-comment|7 lines
+crates\fff-grep\src\matcher.rs|private-doc|fn find_at(&self, haystack: &[u8], at: usize) -> Result<Option<Match>, Self::Error>;
+crates\fff-grep\src\matcher.rs|private-doc|fn find(&self, haystack: &[u8]) -> Result<Option<Match>, Self::Error> {
+crates\fff-grep\src\matcher.rs|private-doc|fn line_terminator(&self) -> Option<LineTerminator> {
+crates\fff-grep\src\matcher.rs|private-doc|type Error: std::fmt::Display;
+crates\fff-grep\src\searcher\mod.rs|private-doc|fn check_config<M: Matcher>(&self, matcher: M) -> Result<(), ConfigError> {
+crates\fff-grep\src\searcher\mod.rs|private-doc|impl Searcher {
+crates\fff-grep\src\searcher\mod.rs|private-doc|matcher: LineTerminator,
+crates\fff-grep\src\searcher\mod.rs|private-doc|MismatchedLineTerminators {
+crates\fff-grep\src\searcher\mod.rs|private-doc|multi_line: bool,
+crates\fff-grep\src\searcher\mod.rs|private-doc|pub(crate) enum ConfigError {
+crates\fff-grep\src\searcher\mod.rs|private-doc|pub(crate) line_number: bool,
+crates\fff-grep\src\searcher\mod.rs|private-doc|pub(crate) line_term: LineTerminator,
+crates\fff-grep\src\searcher\mod.rs|private-doc|pub(crate) struct Config {
+crates\fff-grep\src\searcher\mod.rs|private-doc|searcher: LineTerminator,
+crates\fff-grep\src\searcher\mod.rs|private-doc|type Range = Match;
+crates\fff-grep\src\sink.rs|private-doc|fn begin(&mut self, _searcher: &Searcher) -> Result<bool, Self::Error> {
+crates\fff-grep\src\sink.rs|private-doc|fn error_io(err: io::Error) -> Self {
+crates\fff-grep\src\sink.rs|private-doc|fn error_message<T: std::fmt::Display>(message: T) -> Self;
+crates\fff-grep\src\sink.rs|private-doc|fn finish(&mut self, _searcher: &Searcher, _: &SinkFinish) -> Result<(), Self::Error> {
+crates\fff-grep\src\sink.rs|private-doc|fn matched(&mut self, _searcher: &Searcher, _mat: &SinkMatch<'_>) -> Result<bool, Self::Error>;
+crates\fff-grep\src\sink.rs|private-doc|type Error: SinkError;
+crates\fff-mcp-http\src\grep_params.rs|private-doc|alias = "pattern",
+crates\fff-mcp-http\src\grep_params.rs|private-doc|rename = "maxResults",
+crates\fff-mcp-http\tests\ticket_03b_scope_across_roots.rs|private-doc|fn paths_scope_reaches_the_child_roots() {
+crates\fff-mcp-http\tests\ticket_03b_scope_across_roots.rs|private-doc|fn scope_names_a_child_root_while_the_parent_is_scanning() {
+crates\fff-mcp-http\tests\ticket_03b_scope_across_roots.rs|private-doc|fn scope_outside_a_child_root_excludes_it() {
+crates\fff-mcp-http\tests\ticket_04_eviction.rs|private-doc|fn drain_ticks() {
+crates\fff-mcp-http\tests\ticket_04_eviction.rs|private-doc|fn ordered_roots(server: &TestServer) -> Vec<String> {
+crates\fff-mcp-http\tests\ticket_04_eviction.rs|private-doc|fn roots_tree(count: usize) -> (tempfile::TempDir, Vec<String>) {
+crates\fff-mcp-http\tests\ticket_06_concurrency.rs|private-doc|fn wide_tree(root: &Path, count: usize) {
+crates\fff-mcp-http\tests\ticket_08_lifecycle.rs|private-doc|fn sigterm_exits_the_process_cleanly() {
+crates\fff-mcp\src\cursor.rs|private-doc|cursors: HashMap<String, GrepCursor>,
+crates\fff-mcp\src\cursor.rs|private-doc|insertion_order: VecDeque<String>,
+crates\fff-mcp\src\handshake.rs|private-doc|pub(crate) struct ProbeTolerantTransport<T> {
+crates\fff-mcp\src\main.rs|long-comment|5 lines
+crates\fff-mcp\src\main.rs|private-doc|base_path: Option<String>,
+crates\fff-mcp\src\main.rs|private-doc|content_indexing: bool,
+crates\fff-mcp\src\main.rs|private-doc|fn resolve_defaults(args: &mut Args) {
+crates\fff-mcp\src\main.rs|private-doc|follow_symlinks: bool,
+crates\fff-mcp\src\main.rs|private-doc|frecency_db_path: Option<String>,
+crates\fff-mcp\src\main.rs|private-doc|history_db_path: Option<String>,
+crates\fff-mcp\src\main.rs|private-doc|log_file: Option<PathBuf>,
+crates\fff-mcp\src\main.rs|private-doc|log_level: Option<String>,
+crates\fff-mcp\src\main.rs|private-doc|long = "enable-home-scan",
+crates\fff-mcp\src\main.rs|private-doc|long = "enable-root-scan",
+crates\fff-mcp\src\main.rs|private-doc|long = "idle-timeout-secs",
+crates\fff-mcp\src\main.rs|private-doc|max_cached_files: Option<usize>,
+crates\fff-mcp\src\main.rs|private-doc|no_content_indexing: bool,
+crates\fff-mcp\src\main.rs|private-doc|no_update_check: bool,
+crates\fff-mcp\src\main.rs|private-doc|no_warmup: bool,
+crates\fff-mcp\src\main.rs|private-doc|no_watch: bool,
+crates\fff-mcp\src\main.rs|private-doc|pub(crate) healthcheck: bool,
+crates\fff-mcp\src\main.rs|private-doc|pub(crate) struct Args {
+crates\fff-mcp\src\server.rs|long-comment|5 lines
+crates\fff-mcp\src\server.rs|private-doc|name = "multi_grep",
+crates\fff-mcp\src\server.rs|private-doc|pub(crate) case: Option<CaseMode>,
+crates\fff-mcp\src\server.rs|private-doc|pub(crate) mode: Option<FilePatternMode>,
+crates\fff-mcp\src\server.rs|private-doc|pub(crate) mode: Option<PatternMode>,
+crates\fff-nvim\benches\fuzzy_search_bench.rs|long-comment|10 lines
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_grep_search(c: &mut Criterion) {
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_pagination_performance(c: &mut Criterion) {
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_search_ordering(c: &mut Criterion) {
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_search_result_limits(c: &mut Criterion) {
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_search_scalability(c: &mut Criterion) {
+crates\fff-nvim\benches\fuzzy_search_bench.rs|private-doc|fn bench_search_thread_scaling(c: &mut Criterion) {
+crates\fff-nvim\benches\grep_bench.rs|private-doc|const FUZZY_QUERIES: &[(&str, &str)] = &[
+crates\fff-nvim\benches\grep_bench.rs|private-doc|const PLAIN_QUERIES: &[(&str, &str)] = &[
+crates\fff-nvim\benches\grep_bench.rs|private-doc|fn bench_plain_no_index(c: &mut Criterion) {
+crates\fff-nvim\benches\grep_bench.rs|private-doc|fn setup_no_index() -> &'static TestData {
+crates\fff-nvim\benches\scan_bench.rs|long-comment|5 lines
+crates\fff-nvim\benches\scan_bench.rs|private-doc|fn wait_for_post_scan(sp: &SharedFilePicker, timeout: Duration) -> bool {
+crates\fff-nvim\benches\scan_bench.rs|private-doc|fn wait_for_scan_done(sp: &SharedFilePicker, timeout: Duration) -> bool {
+crates\fff-nvim\src\bin\bench_grep_query.rs|long-comment|6 lines
+crates\fff-nvim\src\bin\bench_grep_query.rs|private-doc|use fff::file_picker::FilePicker;
+crates\fff-nvim\src\bin\bench_lmdb_parallel.rs|long-comment|12 lines
+crates\fff-nvim\src\bin\bench_lmdb_parallel.rs|private-doc|use fff::frecency::FrecencyTracker;
+crates\fff-nvim\src\bin\bench_search_only.rs|private-doc|use fff::file_picker::FilePicker;
+crates\fff-nvim\src\bin\fuzzy_grep_test.rs|long-comment|8 lines
+crates\fff-nvim\src\bin\fuzzy_grep_test.rs|private-doc|use fff::file_picker::FilePicker;
+crates\fff-nvim\src\bin\grep_profiler.rs|long-comment|11 lines
+crates\fff-nvim\src\bin\grep_profiler.rs|private-doc|fn bench_query(&self, query: &str, iterations: usize) -> (BenchStats, usize, usize) {
+crates\fff-nvim\src\bin\grep_profiler.rs|private-doc|fn run_once(&self, query: &str) -> (Duration, usize, usize) {
+crates\fff-nvim\src\bin\grep_profiler.rs|private-doc|use fff::file_picker::FilePicker;
+crates\fff-nvim\src\bin\grep_vs_rg.rs|long-comment|21 lines
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|const DEFAULT_ITERS: usize = 5;
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn apply_telescope_args(cmd: &mut Command, threads: usize) {
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn run_fff_full(picker: &FilePicker, query: &str) -> (usize, Duration) {
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn run_fff_page(picker: &FilePicker, query: &str) -> (usize, Duration) {
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn run_rg_count(
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn run_rg_lines(
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|fn run_rg_page(
+crates\fff-nvim\src\bin\grep_vs_rg.rs|private-doc|use fff::grep::{GrepSearchOptions, parse_grep_query};
+crates\fff-nvim\src\bin\search_profiler.rs|private-doc|fn wait_for_scan(shared_picker: &SharedFilePicker, timeout_secs: u64) -> Result<usize, String> {
+crates\fff-nvim\src\hex_dump.rs|long-comment|11 lines
+crates\fff-nvim\src\hex_dump.rs|long-comment|6 lines
+crates\fff-nvim\src\hex_dump.rs|private-doc|fn format_hex_dump(raw_bytes: &[u8], base_offset: u64) -> (Vec<String>, Vec<Span>) {
+crates\fff-nvim\src\hex_dump.rs|private-doc|fn push_span(
+crates\fff-nvim\src\lib.rs|long-comment|9 lines
+crates\fff-nvim\src\lib.rs|private-doc|fn build_file_path_fallback(lua: &Lua, path: &Path, total_files: usize) -> LuaResult<LuaValue> {
+crates\fff-nvim\src\lib.rs|private-doc|struct PickerInitOpts {
+crates\fff-python\src\finder.rs|long-comment|7 lines
+crates\fff-python\src\finder.rs|private-doc|fn watch(
+crates\fff-python\src\watch.rs|private-doc|active: Arc<AtomicBool>,
+crates\fff-python\src\watch.rs|private-doc|fn unsubscribe(&self) -> bool {
+crates\fff-query-parser\src\config.rs|long-comment|5 lines
+crates\fff-query-parser\src\config.rs|long-comment|6 lines
+crates\fff-query-parser\src\config.rs|long-comment|7 lines
+crates\fff-query-parser\src\config.rs|long-comment|9 lines
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_exclude(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_extension(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_filename_constraint(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_git_status(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_location(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_path_segments(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn enable_type_filter(&self) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn is_glob_pattern(&self, token: &str) -> bool {
+crates\fff-query-parser\src\config.rs|private-doc|fn parse_custom<'a>(&self, _input: &'a str) -> Option<Constraint<'a>> {
+crates\fff-query-parser\src\config.rs|private-doc|fn treat_lone_path_as_text(&self) -> bool {
+crates\fff-query-parser\src\constraints.rs|private-doc|Exclude(&'a [&'a str]),
+crates\fff-query-parser\src\constraints.rs|private-doc|Extension(&'a str),
+crates\fff-query-parser\src\constraints.rs|private-doc|FilePath(&'a str),
+crates\fff-query-parser\src\constraints.rs|private-doc|FileType(&'a str),
+crates\fff-query-parser\src\constraints.rs|private-doc|GitStatus(GitStatusFilter),
+crates\fff-query-parser\src\constraints.rs|private-doc|Glob(&'a str),
+crates\fff-query-parser\src\constraints.rs|private-doc|Not(Box<Constraint<'a>>),
+crates\fff-query-parser\src\constraints.rs|private-doc|Parts(&'a [&'a str]),
+crates\fff-query-parser\src\constraints.rs|private-doc|PathSegment(&'a str),
+crates\fff-query-parser\src\constraints.rs|private-doc|pub(crate) type TextPartsBuffer<'a> = Vec<&'a str>;
+crates\fff-query-parser\src\constraints.rs|private-doc|Text(&'a str),
+crates\fff-query-parser\src\glob_detect.rs|long-comment|6 lines
+crates\fff-query-parser\src\lib.rs|long-comment|40 lines
+crates\fff-query-parser\src\location.rs|long-comment|10 lines
+crates\fff-query-parser\src\location.rs|long-comment|16 lines
+crates\fff-query-parser\src\location.rs|private-doc|fn parse_column_location(query: &str) -> Option<(&str, Location)> {
+crates\fff-query-parser\src\location.rs|private-doc|fn parse_column_range(start_part: &str, end_part: &str) -> Option<Location> {
+crates\fff-query-parser\src\location.rs|private-doc|fn parse_position_range(start_part: &str, end_part: &str) -> Option<Location> {
+crates\fff-query-parser\src\location.rs|private-doc|fn parse_simple_range(location: &str) -> Option<Location> {
+crates\fff-query-parser\src\location.rs|private-doc|fn try_parse_column_position(location: &str) -> Option<Location> {
+crates\fff-query-parser\src\location.rs|private-doc|fn try_parse_column_range(location: &str) -> Option<Location> {
+crates\fff-query-parser\src\parser.rs|long-comment|6 lines
+crates\fff-query-parser\src\parser.rs|long-comment|7 lines
+crates\fff-query-parser\src\parser.rs|long-comment|8 lines
+crates\fff-query-parser\src\parser.rs|long-comment|9 lines
+crates\fff-query-parser\src\parser.rs|private-doc|fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_extension(token: &str) -> Option<Constraint<'_>> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_git_status(value: &str) -> Option<Constraint<'_>> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_negation<'a, C: ParserConfig>(token: &'a str, config: &C) -> Option<Constraint<'a>> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_path_segment_trailing(token: &str) -> Option<Constraint<'_>> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_path_segment(token: &str) -> Option<Constraint<'_>> {
+crates\fff-query-parser\src\parser.rs|private-doc|fn parse_token_without_negation<'a, C: ParserConfig>(
+crates\fff-query-parser\src\parser.rs|private-doc|fn strip_leading_backslash(token: &str) -> &str {
+crates\fff-query-parser\src\parser.rs|private-doc|struct FilenameConstraintConfig;

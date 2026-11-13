@@ -107,9 +107,8 @@ pub(crate) struct FileSync {
     files: StableVec<FileItem>,
     indexable_count: usize,
     base_count: usize,
-    /// Modification time in ns since the Unix epoch, aligned index-for-index
-    /// with `files[..base_count]`. The file table keeps whole seconds; the
-    /// content index needs the untruncated value (Snapshot identity).
+    // Nanosecond mtime, aligned index-for-index with `files[..base_count]`:
+    // the content index needs the precision the file table drops.
     mtime_ns: Arc<Vec<u64>>,
     /// Number of active present files that exists in the file system
     pub(crate) live_count: usize,
@@ -2174,7 +2173,7 @@ impl FilePicker {
         #[cfg(windows)]
         {
             let rel = canonical_relative_path(path, &self.base_path)?;
-            return Some(std::borrow::Cow::Owned(rel));
+            Some(std::borrow::Cow::Owned(rel))
         }
 
         #[cfg(not(windows))]
