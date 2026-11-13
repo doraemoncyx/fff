@@ -85,7 +85,7 @@ impl<'a> RowSink<'a> {
 
 impl Drop for RowSink<'_> {
     fn drop(&mut self) {
-        self.store.mark_idle(self.root);
+        self.store.release(self.root);
     }
 }
 

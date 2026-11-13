@@ -15,6 +15,24 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
+# Two check runs in one target directory break each other's link step (LNK1104)
+# and produce failures that look like code defects. Only one may run at a time.
+$lockPath = Join-Path $repo "target/.check.lock"
+$lock = $null
+for ($attempt = 0; $attempt -lt 120; $attempt++) {
+    try {
+        $lock = [System.IO.File]::Open($lockPath, "OpenOrCreate", "ReadWrite", "None")
+        break
+    } catch {
+        if ($attempt -eq 0) { Write-Host "another check run holds the build; waiting..." }
+        Start-Sleep -Seconds 5
+    }
+}
+if (-not $lock) {
+    Write-Host "another check run has held the build for 10 minutes; giving up" -ForegroundColor Red
+    exit 1
+}
+
 # zlob 1.8.0 declares minimum zig 0.17.1; the PATH zig is often older, so the
 # pin wins whenever it exists.
 $pinnedZig = Join-Path $repo "tools/zig-0.17.1/zig.exe"
@@ -113,8 +131,10 @@ switch ($Mode) {
 if ($failed.Count -gt 0) {
     Write-Host ""
     Write-Host ("failed: " + ($failed -join ", ")) -ForegroundColor Red
+    $lock.Dispose()
     exit 1
 }
 
 Write-Host "OK ($Mode)" -ForegroundColor Green
+$lock.Dispose()
 exit 0

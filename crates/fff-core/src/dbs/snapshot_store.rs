@@ -309,9 +309,12 @@ impl SnapshotStore {
         }
     }
 
-    pub(crate) fn mark_idle(&self, root: &Path) {
+    // Queued behind the scan's own jobs, so the Root stays protected until the
+    // writer has committed its rows. Clearing the flag at drop time instead
+    // would let the budget delete a Root whose writes are still pending.
+    pub(crate) fn release(&self, root: &Path) {
         if !self.is_disabled() {
-            self.budget.mark_idle(root_prefix(root));
+            self.writer.release(root_prefix(root));
         }
     }
 
@@ -899,7 +902,15 @@ mod tests {
         assert_eq!(store.enforce_limits().unwrap(), 1);
         assert!(store.read_meta(&busy).unwrap().is_some());
         assert!(store.read_meta(&idle).unwrap().is_none());
-        store.mark_idle(&busy);
+
+        // The writer enforces the budget after each applied job, so releasing
+        // the Root is what lets it be reclaimed.
+        store.release(&busy);
+        store.flush(Duration::from_secs(10));
+        assert!(
+            store.read_meta(&busy).unwrap().is_none(),
+            "protection ends once the Root's writes have landed"
+        );
     }
 
     // A writer that cannot drain drops the oldest pending batch and never

@@ -37,6 +37,11 @@ pub(crate) enum WriteJob {
         prefix: [u8; ROOT_PREFIX_LEN],
         meta: SnapshotMeta,
     },
+    // Queued after a scan's own jobs, so FIFO keeps the Root protected until
+    // its rows are actually committed.
+    Release {
+        prefix: [u8; ROOT_PREFIX_LEN],
+    },
     Housekeep,
 }
 
@@ -145,6 +150,10 @@ impl SnapshotWriter {
 
     pub(crate) fn push_meta(&self, prefix: [u8; ROOT_PREFIX_LEN], meta: SnapshotMeta) {
         self.push(WriteJob::Meta { prefix, meta });
+    }
+
+    pub(crate) fn release(&self, prefix: [u8; ROOT_PREFIX_LEN]) {
+        self.push(WriteJob::Release { prefix });
     }
 
     pub(crate) fn housekeep(&self) {
@@ -333,6 +342,7 @@ fn apply(
             counters.commits.fetch_add(1, Ordering::Relaxed);
             budget.record(*prefix, meta);
         }
+        WriteJob::Release { prefix } => budget.mark_idle(*prefix),
         WriteJob::Housekeep => {}
     }
     Ok(())
