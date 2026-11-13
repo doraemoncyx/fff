@@ -411,6 +411,7 @@ impl ScanJob {
                 } else {
                     store.queue_meta(&unsafe_snapshot.base_path, written);
                 }
+                log_snapshot_scan(store, &unsafe_snapshot.base_path, &stats);
             }
 
             return stats;
@@ -491,6 +492,31 @@ fn scan_keys(
             *blake3::hash(rel.as_bytes()).as_bytes()
         })
         .collect()
+}
+
+// One line per scan, over both row shapes; a latched store has nothing to say.
+fn log_snapshot_scan(store: &SnapshotStore, root: &std::path::Path, stats: &BigramBuildStats) {
+    if store.is_disabled() {
+        return;
+    }
+    let hits = stats.row_hits + stats.sniff_hits;
+    let misses = stats.row_misses + stats.sniffed.saturating_sub(stats.sniff_hits);
+    let asked = hits + misses;
+    let hit_rate = if asked == 0 {
+        0.0
+    } else {
+        hits as f64 / asked as f64
+    };
+    store.record_scan(hits, misses);
+    info!(
+        root = %root.display(),
+        hits,
+        misses,
+        content_reads = stats.content_reads,
+        sniffed = stats.sniffed,
+        hit_rate,
+        "snapshot hit rate"
+    );
 }
 
 #[cfg(test)]
@@ -801,6 +827,62 @@ mod tests {
             store.read_meta(root).unwrap().unwrap().logical_bytes,
             rows_before
         );
+    }
+
+    // Counters are process-wide, so a second scan adds to the first instead of
+    // resetting: /stats must never look colder than it was.
+    #[test]
+    fn snapshot_hits_and_misses_accumulate_across_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        drop(first);
+        assert_eq!(cold.row_hits, 0, "a cold scan has nothing to hit");
+        let cold_hits = store.hits();
+        let cold_misses = store.misses();
+        assert_eq!(cold_hits, cold.row_hits + cold.sniff_hits);
+
+        let (second, warm) = run_scan(root, Some(&store));
+        drop(second);
+
+        assert!(warm.row_hits > 0, "the second scan replays rows");
+        assert_eq!(
+            store.hits(),
+            cold_hits + warm.row_hits + warm.sniff_hits,
+            "hits keep adding up"
+        );
+        assert!(
+            store.misses() >= cold_misses,
+            "misses never shrink: {} < {cold_misses}",
+            store.misses()
+        );
+        assert!(store.misses() > 0);
+    }
+
+    // A store that died mid-life is a plain miss: the scan must finish and the
+    // tree must stay searchable.
+    #[test]
+    fn a_disabled_store_never_fails_a_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        store.fail(&"the environment was corrupted by the test");
+
+        let (shared, stats) = run_scan(root, Some(&store));
+
+        assert!(store.is_disabled());
+        assert_eq!(stats.row_hits, 0, "a disabled store serves no rows");
+        assert_eq!(store.row_count(root).unwrap(), 0);
+        assert_eq!(store.hits(), 0);
+        assert_eq!(matches(&shared, "alpha_marker").len(), 1, "{stats:?}");
+        assert_eq!(matches(&shared, "gamma_marker").len(), 1);
     }
 
     #[test]

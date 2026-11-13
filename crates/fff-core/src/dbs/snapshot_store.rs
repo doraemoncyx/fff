@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::env_pool::SharedEnv;
 use super::snapshot_budget::SnapshotBudget;
 use super::snapshot_ops;
+use super::snapshot_state::SnapshotState;
 use super::snapshot_writer::SnapshotWriter;
 use crate::constants::MAX_INDEXABLE_FILE_SIZE;
 use crate::error::{Error, Result};
@@ -49,6 +50,7 @@ pub struct SnapshotStore {
     health: DbHealth,
     budget: Arc<SnapshotBudget>,
     writer: SnapshotWriter,
+    state: Arc<SnapshotState>,
 }
 
 impl LmdbStore for SnapshotStore {
@@ -83,7 +85,9 @@ impl SnapshotStore {
             tracing::warn!(?error, "snapshot budget could not read the Roots it holds");
         }
 
-        let writer = SnapshotWriter::spawn(env.clone(), db, Arc::clone(&budget));
+        let state = Arc::new(SnapshotState::default());
+        let writer =
+            SnapshotWriter::spawn(env.clone(), db, Arc::clone(&budget), Arc::clone(&state));
         writer.housekeep();
         Ok(Self {
             env,
@@ -91,10 +95,46 @@ impl SnapshotStore {
             health,
             budget,
             writer,
+            state,
         })
     }
 
+    // True once the store has given up for this process: every method then
+    // answers as if there were no cache.
+    pub fn is_disabled(&self) -> bool {
+        self.state.is_disabled()
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.state.hits()
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.state.misses()
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.budget.bytes()
+    }
+
+    pub fn roots(&self) -> u64 {
+        self.budget.root_count()
+    }
+
+    pub(crate) fn record_scan(&self, hits: u64, misses: u64) {
+        self.state.record(hits, misses);
+    }
+
+    // The one place failures are reported: after this the store is off and the
+    // warning never repeats.
+    pub(crate) fn fail(&self, error: &dyn std::fmt::Display) {
+        self.state.disable(error);
+    }
+
     pub fn put_meta(&self, root: &Path, logical_bytes: u64) -> Result<()> {
+        if self.is_disabled() {
+            return Ok(());
+        }
         let meta = SnapshotMeta {
             schema: SNAPSHOT_SCHEMA,
             fingerprint: fingerprint(),
@@ -103,17 +143,30 @@ impl SnapshotStore {
             root: normalized_root(root),
         };
         let prefix = root_prefix(root);
-        snapshot_ops::put_meta(&self.env, &self.db, &prefix, &meta)?;
+        if let Err(error) = snapshot_ops::put_meta(&self.env, &self.db, &prefix, &meta) {
+            self.fail(&error);
+            return Ok(());
+        }
         self.budget.record(prefix, &meta);
         Ok(())
     }
 
     // A Root's rows and meta, as one range over its prefix.
     pub fn delete_root(&self, root: &Path) -> Result<bool> {
+        if self.is_disabled() {
+            return Ok(false);
+        }
         let prefix = root_prefix(root);
-        let deleted = snapshot_ops::delete_root(&self.env, &self.db, &prefix)?;
-        self.budget.forget(prefix);
-        Ok(deleted)
+        match snapshot_ops::delete_root(&self.env, &self.db, &prefix) {
+            Ok(deleted) => {
+                self.budget.forget(prefix);
+                Ok(deleted)
+            }
+            Err(error) => {
+                self.fail(&error);
+                Ok(false)
+            }
+        }
     }
 
     // A Root's rows may be replayed only when its meta names this Root and was
@@ -137,40 +190,65 @@ impl SnapshotStore {
         out: &mut Vec<Option<(Row, usize)>>,
     ) -> Result<()> {
         out.clear();
+        if self.is_disabled() {
+            out.resize(payloads.len(), None);
+            return Ok(());
+        }
         out.reserve(payloads.len());
-        let rtxn = self
-            .env
-            .read_txn()
-            .map_err(|source| Error::DbStartReadTxn {
-                db: Self::LABEL,
-                source,
-            })?;
+        let rtxn = match self.env.read_txn() {
+            Ok(rtxn) => rtxn,
+            Err(source) => {
+                self.fail(&Error::DbStartReadTxn {
+                    db: Self::LABEL,
+                    source,
+                });
+                out.resize(payloads.len(), None);
+                return Ok(());
+            }
+        };
         let prefix = root_prefix(root);
         for payload in payloads {
-            let key = key_bytes(&prefix, KIND_FILE, payload);
-            let value = self.db.get(&rtxn, &key).map_err(|source| Error::DbRead {
-                db: Self::LABEL,
-                source,
-            })?;
+            let value = match self.db.get(&rtxn, &key_bytes(&prefix, KIND_FILE, payload)) {
+                Ok(value) => value,
+                Err(source) => {
+                    self.fail(&Error::DbRead {
+                        db: Self::LABEL,
+                        source,
+                    });
+                    out.clear();
+                    out.resize(payloads.len(), None);
+                    return Ok(());
+                }
+            };
             out.push(value.and_then(|bytes| Row::decode(bytes).map(|row| (row, bytes.len()))));
         }
         Ok(())
     }
 
     pub fn read_meta(&self, root: &Path) -> Result<Option<SnapshotMeta>> {
-        let rtxn = self
-            .env
-            .read_txn()
-            .map_err(|source| Error::DbStartReadTxn {
-                db: Self::LABEL,
-                source,
-            })?;
-        self.meta_db()
-            .get(&rtxn, &meta_key(&root_prefix(root)))
-            .map_err(|source| Error::DbRead {
-                db: Self::LABEL,
-                source,
-            })
+        if self.is_disabled() {
+            return Ok(None);
+        }
+        let rtxn = match self.env.read_txn() {
+            Ok(rtxn) => rtxn,
+            Err(source) => {
+                self.fail(&Error::DbStartReadTxn {
+                    db: Self::LABEL,
+                    source,
+                });
+                return Ok(None);
+            }
+        };
+        match self.meta_db().get(&rtxn, &meta_key(&root_prefix(root))) {
+            Ok(meta) => Ok(meta),
+            Err(source) => {
+                self.fail(&Error::DbRead {
+                    db: Self::LABEL,
+                    source,
+                });
+                Ok(None)
+            }
+        }
     }
 
     pub fn row_count(&self, root: &Path) -> Result<u64> {
@@ -187,17 +265,26 @@ impl SnapshotStore {
 
     // Hands one batch to the writer thread and returns the bytes queued.
     pub(crate) fn write_rows(&self, root: &Path, rows: Vec<([u8; 32], Vec<u8>)>) -> u64 {
+        if self.is_disabled() {
+            return 0;
+        }
         self.writer.push_rows(root_prefix(root), rows)
     }
 
     // Removes the Root's rows whose hash is absent from `keep`, then rewrites
     // its meta with what actually remains.
     pub(crate) fn sweep(&self, root: &Path, keep: HashSet<[u8; 32]>) {
+        if self.is_disabled() {
+            return;
+        }
         self.writer
             .push_sweep(root_prefix(root), normalized_root(root), Arc::new(keep));
     }
 
     pub(crate) fn queue_meta(&self, root: &Path, logical_bytes: u64) {
+        if self.is_disabled() {
+            return;
+        }
         self.writer.push_meta(
             root_prefix(root),
             SnapshotMeta {
@@ -211,11 +298,15 @@ impl SnapshotStore {
     }
 
     pub(crate) fn mark_active(&self, root: &Path) {
-        self.budget.mark_active(root_prefix(root));
+        if !self.is_disabled() {
+            self.budget.mark_active(root_prefix(root));
+        }
     }
 
     pub(crate) fn mark_idle(&self, root: &Path) {
-        self.budget.mark_idle(root_prefix(root));
+        if !self.is_disabled() {
+            self.budget.mark_idle(root_prefix(root));
+        }
     }
 
     // Waits for every queued write to land; false means the writer stalled.
@@ -255,31 +346,45 @@ impl SnapshotStore {
 
     #[cfg(test)]
     pub(crate) fn total_bytes(&self) -> u64 {
-        self.budget.total()
+        self.budget.bytes()
     }
 
     fn for_each_row(&self, root: &Path, mut on_value: impl FnMut(&[u8])) -> Result<()> {
-        let rtxn = self
-            .env
-            .read_txn()
-            .map_err(|source| Error::DbStartReadTxn {
-                db: Self::LABEL,
-                source,
-            })?;
+        if self.is_disabled() {
+            return Ok(());
+        }
+        let rtxn = match self.env.read_txn() {
+            Ok(rtxn) => rtxn,
+            Err(source) => {
+                self.fail(&Error::DbStartReadTxn {
+                    db: Self::LABEL,
+                    source,
+                });
+                return Ok(());
+            }
+        };
         let prefix = file_prefix(&root_prefix(root));
-        let iter = self
-            .db
-            .prefix_iter(&rtxn, &prefix)
-            .map_err(|source| Error::DbRead {
-                db: Self::LABEL,
-                source,
-            })?;
+        let iter = match self.db.prefix_iter(&rtxn, &prefix) {
+            Ok(iter) => iter,
+            Err(source) => {
+                self.fail(&Error::DbRead {
+                    db: Self::LABEL,
+                    source,
+                });
+                return Ok(());
+            }
+        };
         for entry in iter {
-            let (_, value) = entry.map_err(|source| Error::DbRead {
-                db: Self::LABEL,
-                source,
-            })?;
-            on_value(value);
+            match entry {
+                Ok((_, value)) => on_value(value),
+                Err(source) => {
+                    self.fail(&Error::DbRead {
+                        db: Self::LABEL,
+                        source,
+                    });
+                    return Ok(());
+                }
+            }
         }
         Ok(())
     }
@@ -312,6 +417,9 @@ impl SnapshotStore {
 
     #[cfg(test)]
     pub(crate) fn put_meta_row(&self, root: &Path, meta: SnapshotMeta) -> Result<()> {
+        if self.is_disabled() {
+            return Ok(());
+        }
         let prefix = root_prefix(root);
         snapshot_ops::put_meta(&self.env, &self.db, &prefix, &meta)?;
         self.budget.record(prefix, &meta);
@@ -800,5 +908,102 @@ mod tests {
             rows < ROW_BATCH as u64 * 40,
             "some batches were dropped: {rows} rows"
         );
+    }
+
+    // Counts WARN events so a test can prove a latch never floods the log.
+    #[derive(Clone, Default)]
+    struct WarnCount(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCount {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().level() == &tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[test]
+    fn one_failure_warns_once_and_every_call_then_answers_as_a_miss() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::open(&dir.path().join("snapshot-db")).unwrap();
+        let warns = WarnCount::default();
+
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(warns.clone()),
+            || {
+                store.fail(&"corrupt meta page");
+                store.fail(&"the next failure is the same state");
+                let mut out = Vec::new();
+                store
+                    .get_rows(dir.path(), &[payload(1), payload(2)], &mut out)
+                    .unwrap();
+                store.put_meta(dir.path(), 10).unwrap();
+            },
+        );
+
+        assert!(store.is_disabled());
+        assert_eq!(
+            warns.0.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a broken store must not warn once per event"
+        );
+        assert!(store.read_meta(dir.path()).unwrap().is_none());
+        assert_eq!(store.row_count(dir.path()).unwrap(), 0);
+        assert_eq!(store.logical_bytes(dir.path()).unwrap(), 0);
+        assert!(!store.delete_root(dir.path()).unwrap());
+        assert_eq!(store.write_rows(dir.path(), vec![row(1, 10)]), 0);
+        assert_eq!(store.row_count(dir.path()).unwrap(), 0);
+
+        let mut out = vec![Some((
+            Row {
+                mtime_ns: 1,
+                size: 1,
+                binary: false,
+                consecutive: Vec::new(),
+                skip1: Vec::new(),
+            },
+            1usize,
+        ))];
+        store
+            .get_rows(dir.path(), &[payload(1), payload(2)], &mut out)
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(Option::is_none), "{out:?}");
+    }
+
+    #[test]
+    fn scan_hits_and_misses_accumulate_across_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::open(&dir.path().join("snapshot-db")).unwrap();
+        assert_eq!(store.hits(), 0);
+        assert_eq!(store.misses(), 0);
+
+        store.record_scan(5, 2);
+        store.record_scan(7, 1);
+        assert_eq!(store.hits(), 12);
+        assert_eq!(store.misses(), 3);
+    }
+
+    #[test]
+    fn the_stats_totals_come_from_the_budget_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let store = SnapshotStore::open(&dir.path().join("snapshot-db")).unwrap();
+        assert_eq!(store.bytes(), 0);
+        assert_eq!(store.roots(), 0);
+
+        seed_root(&store, &root, 30, now_secs());
+        assert_eq!(store.bytes(), 30);
+        assert_eq!(store.roots(), 1);
+
+        assert!(store.delete_root(&root).unwrap());
+        assert_eq!(store.bytes(), 0);
+        assert_eq!(store.roots(), 0);
     }
 }

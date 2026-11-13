@@ -15,4 +15,5 @@ pub use snapshot_store::*;
 
 pub(crate) mod snapshot_budget;
 pub(crate) mod snapshot_ops;
+pub(crate) mod snapshot_state;
 pub(crate) mod snapshot_writer;

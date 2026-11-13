@@ -117,7 +117,8 @@ the whole budget is kept with a warning rather than thrashing.
 
 `/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`, and per-Index
 `root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
-`estimated_bytes`, ordered by least recently used.
+`estimated_bytes`, ordered by least recently used. `snapshot` holds the disk
+cache's `hits`/`misses`/`bytes`/`roots`, or `null` when it is not in use.
 
 ## Content index
 
@@ -175,6 +176,31 @@ environment's data before opening it.
 A second scan of an unchanged tree reads no file contents at all: it replays each
 row into the same content-index builder the file pass uses, then serves grep from
 that index exactly as before.
+
+Every failure — a corrupt environment, a directory it did not create, an
+unwritable path, a full disk, a lost write race — ends the same way: one `warn`
+line naming the cause, the Snapshot off for the rest of the process, and scans
+that read files exactly as they did before the feature existed. No error reaches
+the request. A latched-off Snapshot is silent afterwards, never one warning per
+file.
+
+An environment that will not open is recreated only when its directory holds
+nothing but LMDB's own `data.mdb` and `lock.mdb`; a directory holding anything
+else is never touched. This is the one guard between a mistyped `--snapshot-db`
+and someone's data, so a corrupt environment found next to other files is left
+alone and the Snapshot stays off.
+
+`/stats` gains a `snapshot` object once a store is open:
+
+```json
+"snapshot": { "hits": 120848, "misses": 0, "bytes": 80936960, "roots": 1 }
+```
+
+`hits` and `misses` are process-wide and accumulate across scans (a scan's own
+line is the `snapshot hit rate` log entry, with its content reads and sniffed
+count); `bytes` and `roots` come from the live budget index. `null` means no
+Snapshot is in use — off by config, unopenable, or latched off by a failure —
+never a zeroed object that looks like a cold cache.
 
 ## Scans
 

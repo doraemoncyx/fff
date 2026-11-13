@@ -10,6 +10,7 @@ use heed::types::Bytes;
 use super::env_pool::SharedEnv;
 use super::snapshot_budget::SnapshotBudget;
 use super::snapshot_ops;
+use super::snapshot_state::SnapshotState;
 use super::snapshot_store::{ROOT_PREFIX_LEN, SnapshotMeta};
 
 // Pending work the writer may hold before the oldest row batch is dropped.
@@ -87,6 +88,7 @@ impl SnapshotWriter {
         env: SharedEnv,
         db: Database<Bytes, Bytes>,
         budget: Arc<SnapshotBudget>,
+        state: Arc<SnapshotState>,
     ) -> Self {
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let counters = Arc::new(WriterCounters::default());
@@ -95,7 +97,7 @@ impl SnapshotWriter {
 
         let handle = std::thread::Builder::new()
             .name("fff-snapshot-writer".into())
-            .spawn(move || run(thread_shared, thread_counters, env, db, budget));
+            .spawn(move || run(thread_shared, thread_counters, env, db, budget, state));
         let handle = match handle {
             Ok(handle) => Some(handle),
             Err(error) => {
@@ -236,17 +238,26 @@ fn run(
     env: SharedEnv,
     db: Database<Bytes, Bytes>,
     budget: Arc<SnapshotBudget>,
+    state: Arc<SnapshotState>,
 ) {
     loop {
         let Some(job) = next_job(&shared) else {
             return;
         };
-        let failed = apply(&job, &counters, &env, &db, &budget).is_err();
-        if !failed
-            && !matches!(job, WriteJob::Housekeep)
-            && let Err(error) = snapshot_ops::enforce_limits(&env, &db, &budget)
-        {
-            tracing::debug!(?error, "snapshot budget pass failed");
+        // A disabled store has nothing left to write: drop the work, keep the
+        // queue draining so no producer blocks.
+        if state.is_disabled() {
+            settle(&shared);
+            continue;
+        }
+        match apply(&job, &counters, &env, &db, &budget) {
+            Err(error) => state.disable(&error),
+            Ok(()) if !matches!(job, WriteJob::Housekeep) => {
+                if let Err(error) = snapshot_ops::enforce_limits(&env, &db, &budget) {
+                    state.disable(&error);
+                }
+            }
+            Ok(()) => {}
         }
         settle(&shared);
     }

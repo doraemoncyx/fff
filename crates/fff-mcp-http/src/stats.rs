@@ -12,7 +12,18 @@ pub struct StatsResponse {
     pub peak_scans_in_flight: usize,
     /// Whether Indexes build the bigram content index used as grep's prefilter.
     pub content_indexing: bool,
+    /// `None` when no Snapshot is in use: off by config, unopenable, or latched
+    /// off by a failure. Never a zeroed object that reads as a cold cache.
+    pub snapshot: Option<SnapshotStats>,
     pub indexes: Vec<IndexStats>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub bytes: u64,
+    pub roots: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +67,12 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
         scans_in_flight: registry.scans_in_flight(),
         peak_scans_in_flight: registry.peak_scans_in_flight(),
         content_indexing: registry.config().content_indexing,
+        snapshot: registry.snapshot_store().map(|store| SnapshotStats {
+            hits: store.hits(),
+            misses: store.misses(),
+            bytes: store.bytes(),
+            roots: store.roots(),
+        }),
         indexes,
     }
 }

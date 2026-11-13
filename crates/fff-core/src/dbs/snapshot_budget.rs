@@ -40,6 +40,19 @@ impl SnapshotBudget {
         self.bytes != u64::MAX
     }
 
+    // Row bytes across every Root this process knows about.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.roots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .fold(0u64, |sum, record| sum + record.logical_bytes)
+    }
+
+    pub(crate) fn root_count(&self) -> u64 {
+        self.roots.lock().unwrap_or_else(|e| e.into_inner()).len() as u64
+    }
+
     // One pass over the keys at startup fills the index; nothing else reads it
     // back from disk, so a commit costs no traversal.
     pub(crate) fn load(&self, env: &SharedEnv, db: &Database<Bytes, Bytes>) -> Result<()> {
@@ -104,15 +117,6 @@ impl SnapshotBudget {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&prefix);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn total(&self) -> u64 {
-        self.roots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .fold(0u64, |sum, record| sum + record.logical_bytes)
     }
 
     // Roots to delete, oldest first: everything past its age, then least

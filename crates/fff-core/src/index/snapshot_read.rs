@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::dbs::SnapshotStore;
 use crate::index::bigram_row::Row;
@@ -12,7 +11,6 @@ pub(crate) struct RowSource<'a> {
     store: &'a SnapshotStore,
     root: &'a Path,
     current: bool,
-    read_failed: AtomicBool,
 }
 
 impl<'a> RowSource<'a> {
@@ -21,7 +19,6 @@ impl<'a> RowSource<'a> {
             store,
             root,
             current: store.root_is_current(root),
-            read_failed: AtomicBool::new(false),
         }
     }
 
@@ -52,13 +49,13 @@ impl<'a> RowSource<'a> {
         }
 
         let mut stored = Vec::with_capacity(files.len());
-        if let Err(e) = self.store.get_rows(self.root, &payloads, &mut stored) {
-            if !self.read_failed.swap(true, Ordering::Relaxed) {
-                tracing::warn!(
-                    ?e,
-                    "snapshot row read failed; rebuilding this scan from files"
-                );
-            }
+        // The store answers a broken environment with misses and has already
+        // warned once; a read error here is the same "no cache" state.
+        if self
+            .store
+            .get_rows(self.root, &payloads, &mut stored)
+            .is_err()
+        {
             return slots;
         }
 

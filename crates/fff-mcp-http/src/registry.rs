@@ -388,6 +388,13 @@ impl Registry {
         crate::stats::snapshot(self)
     }
 
+    // The one store this process opened, unless a failure latched it off.
+    pub(crate) fn snapshot_store(&self) -> Option<&SnapshotStore> {
+        self.snapshot
+            .as_deref()
+            .filter(|store| !store.is_disabled())
+    }
+
     pub fn shutdown(&self) {
         let indexes = self.indices();
         for index in &indexes {
@@ -433,7 +440,8 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-// One store per process; a Snapshot that cannot open disables itself.
+// One store per process. An environment that will not open is either ours to
+// recreate or not ours to touch; either way it warns once and scans go on.
 fn open_snapshot(config: &Config) -> Option<Arc<SnapshotStore>> {
     let path = config.snapshot_path()?;
     if config.snapshot_reset {
@@ -445,11 +453,52 @@ fn open_snapshot(config: &Config) -> Option<Arc<SnapshotStore>> {
     let budget = config.snapshot_budget_mb.saturating_mul(1024 * 1024);
     match SnapshotStore::open_with_budget(path, budget) {
         Ok(store) => Some(Arc::new(store)),
+        Err(error) if our_environment(path) => match recreate(path, budget) {
+            Ok(store) => {
+                tracing::warn!(?error, path = %path.display(), "snapshot environment recreated");
+                Some(store)
+            }
+            Err(retry) => {
+                tracing::warn!(?error, %retry, path = %path.display(), "snapshot disabled");
+                None
+            }
+        },
         Err(error) => {
-            tracing::warn!(?error, path = %path.display(), "snapshot disabled");
+            tracing::warn!(
+                ?error,
+                path = %path.display(),
+                "snapshot disabled; the directory is not ours to recreate"
+            );
             None
         }
     }
+}
+
+// The only thing between a mistyped --snapshot-db and someone's data: a
+// directory is recreated only when it holds nothing but LMDB's own files, since
+// a corrupt environment and a foreign one are indistinguishable before opening.
+fn our_environment(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).all(|entry| {
+        matches!(
+            entry.file_name().to_str(),
+            Some("data.mdb") | Some("lock.mdb")
+        )
+    })
+}
+
+fn recreate(path: &Path, budget: u64) -> Result<Arc<SnapshotStore>, String> {
+    for name in ["data.mdb", "lock.mdb"] {
+        let file = path.join(name);
+        if file.exists() {
+            std::fs::remove_file(&file).map_err(|error| format!("{}: {error}", file.display()))?;
+        }
+    }
+    SnapshotStore::open_with_budget(path, budget)
+        .map(Arc::new)
+        .map_err(|error| error.to_string())
 }
 
 // Only the env's own files are ours; never wipe a directory we were pointed at.
