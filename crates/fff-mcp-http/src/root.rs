@@ -2,25 +2,118 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ApiError;
 
-// Canonicalize a tardir. Root identity is the canonical path, so `..`,
-// trailing separators, case and `\\?\` spellings all collapse onto one key.
-pub(crate) fn canonical_dir(raw: &str) -> Result<PathBuf, ApiError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ApiError::invalid_params("tardir must not be empty"));
+// A tardir names a directory or one file: `dir` is the Index key (a file's
+// parent), `file` the name to scope to inside it.
+pub(crate) struct Target {
+    dir: PathBuf,
+    file: Option<String>,
+}
+
+impl Target {
+    pub fn parse(raw: &str) -> Result<Self, ApiError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::invalid_params("tardir must not be empty"));
+        }
+        // Root identity is the canonical path, so `..`, trailing separators,
+        // case and `\\?\` spellings all collapse onto one key.
+        let canonical = fff::path_utils::canonicalize(Path::new(trimmed)).map_err(|error| {
+            match without_trailing_separator(trimmed) {
+                // Windows rejects `file.rs\` before any is_dir check, so the
+                // separator, not a missing path, is what failed.
+                Some(stripped) if std::fs::metadata(stripped).is_ok_and(|meta| meta.is_file()) => {
+                    ApiError::invalid_params(format!(
+                        "tardir names a file, so its trailing separator must be removed: {stripped}"
+                    ))
+                }
+                _ => {
+                    ApiError::invalid_params(format!("tardir does not exist: {trimmed} ({error})"))
+                }
+            }
+        })?;
+        let meta = std::fs::metadata(&canonical).map_err(|e| {
+            ApiError::invalid_params(format!("tardir is not accessible: {trimmed} ({e})"))
+        })?;
+        if meta.is_dir() {
+            return Ok(Self {
+                dir: canonical,
+                file: None,
+            });
+        }
+        let file = canonical
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| ApiError::invalid_params(format!("tardir names no file: {trimmed}")))?;
+        let dir = canonical.parent().map(Path::to_path_buf).ok_or_else(|| {
+            ApiError::invalid_params(format!("tardir has no parent directory: {trimmed}"))
+        })?;
+        Ok(Self {
+            dir,
+            file: Some(file),
+        })
     }
-    let path = Path::new(trimmed);
-    let canonical = fff::path_utils::canonicalize(path)
-        .map_err(|e| ApiError::invalid_params(format!("tardir does not exist: {trimmed} ({e})")))?;
-    let meta = std::fs::metadata(&canonical).map_err(|e| {
-        ApiError::invalid_params(format!("tardir is not accessible: {trimmed} ({e})"))
-    })?;
-    if !meta.is_dir() {
-        return Err(ApiError::invalid_params(format!(
-            "tardir is not a directory: {trimmed}"
-        )));
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
-    Ok(canonical)
+
+    pub fn file(&self) -> Option<&str> {
+        self.file.as_deref()
+    }
+
+    // True when a tardir-relative path names the target file itself.
+    pub fn names_file(&self, relative: &str) -> bool {
+        self.file
+            .as_deref()
+            .is_some_and(|name| same_path(name, relative))
+    }
+
+    // The target's path below `root`: `join(relative_to(dir, root), file)`.
+    pub fn prefix_in(&self, root: &Path) -> Option<String> {
+        let relative = relative_to(&self.dir, root)?;
+        Some(match &self.file {
+            Some(name) if relative.is_empty() => name.clone(),
+            Some(name) => format!("{relative}/{name}"),
+            None => relative,
+        })
+    }
+
+    // A file target is searchable only while the Index holds a live, non-binary,
+    // non-empty entry for it.
+    pub fn searchable_in(&self, picker: &fff::FilePicker) -> bool {
+        if self.file().is_none() {
+            return true;
+        }
+        let Some(relative) = self.prefix_in(picker.base_path()) else {
+            return false;
+        };
+        picker.get_files().iter().any(|file| {
+            !file.is_deleted()
+                && !file.is_binary()
+                && file.size > 0
+                && same_path(&file.relative_path(picker), &relative)
+        })
+    }
+
+    // A file target whose parent cannot be a Root gets a message naming the file.
+    pub fn index_error(&self, error: ApiError) -> ApiError {
+        let Some(name) = self.file() else {
+            return error;
+        };
+        ApiError::invalid_params(format!(
+            "cannot search {name}: its directory cannot be indexed as a Root ({}); read the file directly instead",
+            error.message()
+        ))
+    }
+}
+
+// True when both strings name the same path spelling.
+pub(crate) fn same_path(left: &str, right: &str) -> bool {
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
 }
 
 // Registry key for a canonical Root.
@@ -77,6 +170,13 @@ fn normalized_text(path: &Path) -> String {
     text.trim_end_matches('/').to_string()
 }
 
+// The same spelling without its trailing separator, unless that is a drive root.
+fn without_trailing_separator(raw: &str) -> Option<&str> {
+    let stripped = raw.trim_end_matches(['/', '\\']);
+    (stripped.len() < raw.len() && !stripped.is_empty() && !stripped.ends_with(':'))
+        .then_some(stripped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +215,46 @@ mod tests {
             Some("")
         );
         assert_eq!(relative_to(Path::new("C:/x"), Path::new("C:/a")), None);
+    }
+
+    #[test]
+    fn file_target_prefix_joins_the_name() {
+        let target = Target {
+            dir: PathBuf::from("C:/a"),
+            file: Some("main.rs".into()),
+        };
+        assert_eq!(
+            target.prefix_in(Path::new("C:/a")).as_deref(),
+            Some("main.rs")
+        );
+        assert_eq!(
+            target.prefix_in(Path::new("C:/")).as_deref(),
+            Some("a/main.rs")
+        );
+        assert_eq!(target.prefix_in(Path::new("C:/b")), None);
+        assert_eq!(target.names_file("MAIN.RS"), cfg!(windows));
+        assert!(!target.names_file("other.rs"));
+    }
+
+    #[test]
+    fn directory_target_prefix_is_unchanged() {
+        let target = Target {
+            dir: PathBuf::from("C:/a/src"),
+            file: None,
+        };
+        assert_eq!(target.prefix_in(Path::new("C:/a")).as_deref(), Some("src"));
+        assert!(!target.names_file(""));
+    }
+
+    #[test]
+    fn trailing_separator_only_strips_real_paths() {
+        assert_eq!(
+            without_trailing_separator("C:/a/file.rs\\"),
+            Some("C:/a/file.rs")
+        );
+        assert_eq!(without_trailing_separator("C:/a/"), Some("C:/a"));
+        assert_eq!(without_trailing_separator("C:/"), None);
+        assert_eq!(without_trailing_separator("C:"), None);
+        assert_eq!(without_trailing_separator(""), None);
     }
 }

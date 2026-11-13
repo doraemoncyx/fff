@@ -409,11 +409,12 @@ fn an_invalid_tardir_is_a_parameter_error() {
     initialize(&server);
     let file = dir.path().join("src/main.rs").to_string_lossy().to_string();
 
+    // A file is a legal target now; its trailing-separator spelling is not.
     let tardirs = [
         Value::Null,
         json!("   "),
         json!("C:/fff-no-such-tardir-xyz"),
-        json!(file),
+        json!(format!("{file}\\")),
     ];
     for (index, tardir) in tardirs.into_iter().enumerate() {
         let mut arguments = json!({ "query": "needle" });

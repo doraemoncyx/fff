@@ -56,22 +56,36 @@ _Not_: outdated, dirty, expired.
 
 ## tardir
 
-The directory named by a single request. A tardir is not necessarily a Root: it
-is only a Root when an Index happens to exist for exactly that directory.
+The path named by a single request: a directory, or one file. A tardir is not
+necessarily a Root: it is only a Root when an Index happens to exist for exactly
+that directory.
 
 _Not_: target, scope, query dir.
 
+## File target
+
+A tardir that names a file. Its Root is the file's parent directory, which
+reuses an existing Index when one covers it; the request is scoped to that one
+path, so no second Index is created and `/stats` still reports parent
+directories. A file the Index does not hold (ignored, binary, empty, over the
+size cap) is still a file target: content search answers "not in the Index"
+instead of a bare "no matches".
+
+_Not_: per-file Index, file Root.
+
 ## Cover
 
-An Index covers a tardir when its Root is the tardir or an ancestor of it. A
-covering Index can answer a request for that tardir because every file under the
-tardir is already in it. An Index never covers a tardir above its own Root.
+An Index covers a tardir when its Root is the tardir's directory or an ancestor
+of it. A covering Index can answer a request for that tardir because every file
+under the tardir's directory is already in it. An Index never covers a tardir
+above its own Root.
 
 ## Serving set
 
 The set of Indexes consulted for one request: the deepest Index covering the
-tardir, plus every Index whose Root lies below the tardir. Indexes outside both
-relations are never consulted.
+tardir, plus every Index whose Root lies below the tardir's directory. Indexes
+outside both relations are never consulted. A file target has no Root below it,
+so its serving set is the covering Index alone.
 
 ## Merge
 

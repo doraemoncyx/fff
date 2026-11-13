@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -37,7 +36,8 @@ pub struct SearchHit {
 
 pub(crate) struct Serving {
     pub index: Arc<Index>,
-    /// tardir relative to this Root; non-empty only for a covering Index.
+    /// tardir relative to this Root, with a file target's name appended; empty
+    /// only when the Root is the tardir itself.
     pub prefix: String,
     /// Root relative to the tardir; non-empty only for an Index below it.
     pub base: String,
@@ -54,7 +54,7 @@ pub(crate) fn execute(registry: &Registry, params: &Params) -> Result<SearchResp
     let offset = resolve_offset(registry, params);
     let query = Query::normalize(params, offset)?;
     let deadline = Instant::now() + registry.config().scan_wait;
-    let plan = serving_set(registry, &query.tardir, deadline)?;
+    let plan = serving_set(registry, &query.target, deadline)?;
     let serving = plan.entries;
     let serving_indexes: Vec<Arc<Index>> =
         serving.iter().map(|entry| entry.index.clone()).collect();
@@ -154,13 +154,13 @@ fn resolve_offset(registry: &Registry, params: &Params) -> usize {
 // Scope is evaluated per Root, so the merge only exists while the parent scans.
 fn serving_set(
     registry: &Registry,
-    tardir: &Path,
+    target: &root::Target,
     deadline: Instant,
 ) -> Result<ServingPlan, ApiError> {
     let registered = registry.indices();
     let covering = registered
         .iter()
-        .filter(|index| root::covers(index.root(), tardir))
+        .filter(|index| root::covers(index.root(), target.dir()))
         .max_by_key(|index| index.key().len())
         .cloned();
 
@@ -168,10 +168,10 @@ fn serving_set(
     let mut serving = Vec::new();
     match covering {
         Some(index) => {
-            let prefix = root::relative_to(tardir, index.root()).ok_or_else(|| {
+            let prefix = target.prefix_in(index.root()).ok_or_else(|| {
                 ApiError::internal(format!(
                     "cannot express {} below {}",
-                    tardir.display(),
+                    target.dir().display(),
                     index.root().display()
                 ))
             })?;
@@ -181,23 +181,35 @@ fn serving_set(
                 base: String::new(),
             });
         }
-        None => match registry.ensure_index(tardir, deadline)? {
-            Some(index) => serving.push(Serving {
-                index,
-                prefix: String::new(),
-                base: String::new(),
-            }),
+        None => match registry
+            .ensure_index(target.dir(), deadline)
+            .map_err(|error| target.index_error(error))?
+        {
+            Some(index) => {
+                let prefix = target.prefix_in(index.root()).unwrap_or_default();
+                serving.push(Serving {
+                    index,
+                    prefix,
+                    base: String::new(),
+                });
+            }
             None => pending = true,
         },
     }
 
-    let mut below: Vec<Arc<Index>> = registered
-        .into_iter()
-        .filter(|index| root::is_strict_descendant(index.root(), tardir))
-        .collect();
-    below.sort_by_key(|index| index.key().len());
+    // A file target sits in `dir` itself, so no Root below it can hold the file.
+    let below = if target.file().is_some() {
+        Vec::new()
+    } else {
+        let mut below: Vec<Arc<Index>> = registered
+            .into_iter()
+            .filter(|index| root::is_strict_descendant(index.root(), target.dir()))
+            .collect();
+        below.sort_by_key(|index| index.key().len());
+        below
+    };
     for index in below {
-        let base = root::relative_to(index.root(), tardir).unwrap_or_default();
+        let base = root::relative_to(index.root(), target.dir()).unwrap_or_default();
         serving.push(Serving {
             index,
             prefix: String::new(),
@@ -211,8 +223,16 @@ fn serving_set(
 }
 
 // Tardir-relative view of a Root-relative index path.
-fn tardir_relative<'a>(rel: &'a str, entry: &Serving) -> Option<Cow<'a, str>> {
+fn tardir_relative<'a>(
+    rel: &'a str,
+    entry: &Serving,
+    file: Option<&'a str>,
+) -> Option<Cow<'a, str>> {
     if entry.base.is_empty() {
+        // The file target is the whole scope, so its own path reads as its name.
+        if let Some(name) = file {
+            return root::same_path(rel, &entry.prefix).then_some(Cow::Borrowed(name));
+        }
         return strip_prefix(rel, &entry.prefix).map(Cow::Borrowed);
     }
     (!rel.is_empty()).then(|| Cow::Owned(format!("{}/{}", entry.base, rel)))
@@ -390,7 +410,7 @@ fn fuzzy_search(
         .zip(&result.scores)
         .filter_map(|(file, score)| {
             let rel = file.relative_path(picker);
-            let tardir_rel = tardir_relative(&rel, entry)?;
+            let tardir_rel = tardir_relative(&rel, entry, query.target.file())?;
             let depth = depth_of(&tardir_rel);
             Some(Hit {
                 key: absolute_key(picker, &rel),
@@ -484,7 +504,7 @@ fn literal_search(
             continue;
         }
         let rel = file.relative_path(picker);
-        let Some(tardir_rel) = tardir_relative(&rel, entry) else {
+        let Some(tardir_rel) = tardir_relative(&rel, entry, query.target.file()) else {
             continue;
         };
         if regex

@@ -28,7 +28,7 @@ pub struct Params {
         deserialize_with = "deserialize_string"
     )]
     pub querystr: String,
-    /// Absolute directory to search. Indexed on demand and kept in an LRU registry.
+    /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
     // Directory, filename, or one glob relative to tardir.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
@@ -133,7 +133,7 @@ pub(crate) enum PathSpec {
 // Validated request ready for execution.
 pub(crate) struct Query {
     pub raw: String,
-    pub tardir: PathBuf,
+    pub target: crate::root::Target,
     pub path: Option<PathSpec>,
     pub paths: Vec<String>,
     pub globs: Vec<String>,
@@ -146,19 +146,23 @@ pub(crate) struct Query {
 
 impl Query {
     pub fn normalize(params: &Params, offset: usize) -> Result<Self, ApiError> {
-        let tardir = crate::root::canonical_dir(&params.tardir)?;
+        let target = crate::root::Target::parse(&params.tardir)?;
+        let dir = target.dir();
         let path = params
             .path
             .as_deref()
             .map(str::trim)
             .filter(|path| !path.is_empty())
-            .map(|path| resolve_path(path, &tardir))
-            .transpose()?;
-        let paths = params
+            .map(|path| resolve_path(path, dir))
+            .transpose()?
+            // A file target is already the scope, so naming it again is a no-op.
+            .filter(|spec| !matches!(spec, PathSpec::Prefix(rel) if target.names_file(rel)));
+        let mut paths = params
             .paths
             .iter()
-            .map(|path| resolve_relative(path, &tardir))
+            .map(|path| resolve_relative(path, dir))
             .collect::<Result<Vec<_>, _>>()?;
+        paths.retain(|path| !target.names_file(path));
         let filters = params
             .filters
             .iter()
@@ -171,7 +175,7 @@ impl Query {
 
         Ok(Self {
             raw: params.querystr.trim().to_string(),
-            tardir,
+            target,
             path,
             paths,
             globs: params.globs.clone(),

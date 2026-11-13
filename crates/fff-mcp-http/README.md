@@ -1,6 +1,6 @@
 # fff-mcp-http
 
-A long-lived file finder that takes a query **and** a target directory (tardir)
+A long-lived file finder that takes a query **and** a target path (tardir)
 per request. Every tardir becomes a **Root** with its own index; indexes for
 parent and child directories are kept side by side, merged per request, and
 evicted on a memory budget instead of being destroyed on every directory
@@ -49,14 +49,23 @@ request to get the complete set. `served_by` names the Roots that were merged;
 ## Parameters
 
 Required: `querystr` (aliases `query`, `pattern`; a JSON array is joined with
-spaces) and `tardir` (absolute path; the directory is indexed on demand and an
-error is returned if it does not exist).
+spaces) and `tardir` (absolute path; a directory or a single file. The directory
+— or the file's parent — is indexed on demand and an error is returned if the
+path does not exist).
 
 Optional, same semantics as `fff-mcp`: `path`, `paths`, `globs` (`!` prefix
 excludes), `hidden` (default `true`), `mode` (`fuzzy` default, `glob`,
 `regex`), `filters` (regex AND), `maxResults` (default 20, clamped to
 1..=10000), `cursor`. `path` and `paths` are relative to `tardir`; absolute
 paths must stay inside it and `..` is rejected.
+
+A file `tardir` scopes the request to exactly that file: its parent directory
+becomes the Root (an existing Index covering it is reused), and `rel` in
+`/search` results is the bare filename. Naming that file again in `path` or
+`paths` changes nothing; naming anything else yields an empty result. When the
+file is not in the Index (ignored, binary, empty, or over the size cap), content
+search answers `0 matches.` with a note saying so — the file was not searched,
+so read it directly instead.
 
 ## Content search
 
@@ -86,8 +95,9 @@ context rows, the `0 matches.` / definitions-fallback sentences, and an opaque
 Content search runs against **one** Index — the deepest one whose Root covers
 the tardir — because paging needs one coherent file list, so Roots are never
 merged for grep. A tardir inside a Root is restricted to its own subtree, so a
-sibling directory never leaks into the results. When no Index covers the
-tardir one is created and the request waits for the initial walk; if
+sibling directory never leaks into the results; a tardir that names a file is
+restricted to that one file. When no Index covers the tardir one is created and
+the request waits for the initial walk; if
 `--scan-wait-secs` expires first, the matches come from the files indexed so
 far and the text starts with a note that the result is partial. `scanning:
 true` in the route response says the same thing.
@@ -100,6 +110,8 @@ instead of paging someone else's file list.
 
 - A deeper tardir inside an existing Root reuses that Root's index and narrows
   the query with a subtree glob — no rescan.
+- A tardir that names a file is answered from its parent directory's Index,
+  narrowed to that one file; no per-file Index is created.
 - A parent tardir with child Roots below it queries all of them and merges by
   absolute path, so results arrive before the parent's own scan finishes.
 - When the parent's scan completes, the child Roots below it are dropped

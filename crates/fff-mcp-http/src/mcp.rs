@@ -9,9 +9,10 @@ use crate::params::Params;
 use crate::registry::Registry;
 
 const INSTRUCTIONS: &str = "Find indexed files by path fragment, glob, or regex, and search file contents with grep or multi_grep. \
-Every call names a tardir (absolute directory): the server indexes it on demand, keeps indexes for parent and child directories \
-and merges their results for find_files. grep and multi_grep run on one Index covering the tardir, so their results are content \
-matches with one-based line numbers, never JSON. \
+Every call names a tardir (absolute path: a directory, or a single file): the server indexes that directory on demand, keeps \
+indexes for parent and child directories and merges their results for find_files. A file tardir searches only that file; when \
+the file is not in the Index (ignored, binary, empty, over the size cap) the results say so instead of guessing. grep and \
+multi_grep run on one Index covering the tardir, so their results are content matches with one-based line numbers, never JSON. \
 Results carry absolute paths and paths relative to tardir. Content search has no index of file contents: the first call on a new \
 tardir waits for the scan, and a still-scanning Index answers with a partial result that says so.";
 

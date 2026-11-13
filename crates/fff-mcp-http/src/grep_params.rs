@@ -6,6 +6,7 @@ use serde::de;
 
 use crate::error::ApiError;
 use crate::params::{deserialize_optional_number, deserialize_optional_string, deserialize_string};
+use crate::root::Target;
 use crate::scope::{
     alternatives, compile_glob, descendant_glob, enters_root, escape_glob, names_hidden_dir,
 };
@@ -21,7 +22,7 @@ pub(crate) struct GrepParams {
         deserialize_with = "deserialize_string"
     )]
     pub query: String,
-    /// Absolute directory to search. Indexed on demand and kept in an LRU registry.
+    /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
     /// Complete directory name, filename, or glob. Use **/*transport*/** for a partial module name.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
@@ -69,7 +70,7 @@ pub(crate) struct MultiGrepParams {
     /// Patterns to match (OR logic). Include all naming conventions: snake_case, PascalCase, camelCase.
     #[serde(deserialize_with = "deserialize_patterns")]
     pub patterns: Vec<String>,
-    /// Absolute directory to search. Indexed on demand and kept in an LRU registry.
+    /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
     /// Known directory, module glob, filename, or extension, e.g. "src/net/" or "**/billing/**".
     #[serde(default, deserialize_with = "deserialize_optional_string")]
@@ -266,6 +267,26 @@ impl SearchScope {
 
     pub fn is_explicit(&self) -> bool {
         self.paths.is_some() || self.globs.is_some()
+    }
+
+    // Drop scope entries that name the file target itself: the target already
+    // narrows the search to it, so re-narrowing could only empty it.
+    pub fn fold_file_target(&mut self, target: &Target) -> Result<(), ApiError> {
+        if target.file().is_none() {
+            return Ok(());
+        }
+        let Some(paths) = self.paths.as_mut() else {
+            return Ok(());
+        };
+        let mut kept = Vec::with_capacity(paths.len());
+        for path in paths.drain(..) {
+            let relative = crate::params::resolve_relative(&path, target.dir())?;
+            if !target.names_file(&relative) {
+                kept.push(path);
+            }
+        }
+        self.paths = (!kept.is_empty()).then_some(kept);
+        Ok(())
     }
 }
 

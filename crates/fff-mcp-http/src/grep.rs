@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,6 +15,7 @@ use crate::grep_params::{
 };
 use crate::index::Index;
 use crate::registry::Registry;
+use crate::root::Target;
 
 // Grep pages print every match, so a huge maxResults would flood the caller.
 const MAX_GREP_PAGE: usize = 200;
@@ -51,13 +51,15 @@ pub(crate) fn grep(registry: &Registry, mut params: GrepParams) -> Result<GrepTe
             }
         }
     };
-    let tardir = params.tardir.clone();
-    complete(registry, &tardir, |selection, picker, tardir| {
+    // Scope folding needs no Index, so it runs before the picker lock is taken.
+    let target = Target::parse(&params.tardir)?;
+    fold_file_target(&mut params, &target)?;
+    complete(registry, target, |selection, picker, target| {
         let label = params.path.clone();
         if let Some(path) = params.path.as_deref() {
-            params.path = Some(retarget_path(path, &selection.prefix, tardir)?);
+            params.path = Some(retarget_path(path, &selection.prefix, target.dir())?);
         }
-        retarget_scope(&mut params.scope, &selection.prefix, tardir)?;
+        retarget_scope(&mut params.scope, &selection.prefix, target.dir())?;
         perform_grep(
             registry,
             selection.index.key(),
@@ -71,12 +73,27 @@ pub(crate) fn grep(registry: &Registry, mut params: GrepParams) -> Result<GrepTe
     })
 }
 
+// Scope fields that name a file target itself add nothing: the target is the
+// scope already. Directory targets keep their existing meaning.
+fn fold_file_target(params: &mut GrepParams, target: &Target) -> Result<(), ApiError> {
+    if target.file().is_none() {
+        return Ok(());
+    }
+    if let Some(path) = params.path.as_deref() {
+        let relative = crate::params::resolve_relative(path, target.dir())?;
+        if target.names_file(&relative) {
+            params.path = None;
+        }
+    }
+    params.scope.fold_file_target(target)
+}
+
 pub(crate) fn multi_grep(
     registry: &Registry,
     params: MultiGrepParams,
 ) -> Result<GrepText, ApiError> {
-    let tardir = params.tardir.clone();
-    complete(registry, &tardir, |selection, picker, _| {
+    let target = Target::parse(&params.tardir)?;
+    complete(registry, target, |selection, picker, _| {
         multi_grep_inner(
             registry,
             selection.index.key(),
@@ -90,7 +107,8 @@ pub(crate) fn multi_grep(
 
 struct Selection {
     index: Arc<Index>,
-    // tardir relative to the Index's Root; empty when the Root is the tardir.
+    // tardir relative to the Index's Root, with a file target's name appended;
+    // empty only when the Root is the tardir itself.
     prefix: String,
     scanning: bool,
     // Walk and content indexing both finished, so pages stay coherent.
@@ -99,27 +117,33 @@ struct Selection {
 }
 
 // One request runs against a single Index: merging Roots would break paging.
-fn select(registry: &Registry, tardir: &Path) -> Result<Option<Selection>, ApiError> {
+fn select(registry: &Registry, target: &Target) -> Result<Option<Selection>, ApiError> {
     let deadline = Instant::now() + registry.config().scan_wait;
     let covering = registry
         .indices()
         .iter()
-        .filter(|index| crate::root::covers(index.root(), tardir))
+        .filter(|index| crate::root::covers(index.root(), target.dir()))
         .max_by_key(|index| index.key().len())
         .cloned();
     let (index, prefix) = match covering {
         Some(index) => {
-            let prefix = crate::root::relative_to(tardir, index.root()).ok_or_else(|| {
+            let prefix = target.prefix_in(index.root()).ok_or_else(|| {
                 ApiError::internal(format!(
                     "cannot express {} below {}",
-                    tardir.display(),
+                    target.dir().display(),
                     index.root().display()
                 ))
             })?;
             (Some(index), prefix)
         }
-        None => match registry.ensure_index(tardir, deadline)? {
-            Some(index) => (Some(index), String::new()),
+        None => match registry
+            .ensure_index(target.dir(), deadline)
+            .map_err(|error| target.index_error(error))?
+        {
+            Some(index) => (
+                Some(index),
+                target.prefix_in(target.dir()).unwrap_or_default(),
+            ),
             None => (None, String::new()),
         },
     };
@@ -144,12 +168,11 @@ fn select(registry: &Registry, tardir: &Path) -> Result<Option<Selection>, ApiEr
 
 fn complete(
     registry: &Registry,
-    tardir: &str,
-    build: impl FnOnce(&Selection, &fff::FilePicker, &Path) -> Result<String, ApiError>,
+    target: Target,
+    build: impl FnOnce(&Selection, &fff::FilePicker, &Target) -> Result<String, ApiError>,
 ) -> Result<GrepText, ApiError> {
-    let tardir = crate::root::canonical_dir(tardir)?;
     registry.mark_activity();
-    let Some(selection) = select(registry, &tardir)? else {
+    let Some(selection) = select(registry, &target)? else {
         return Ok(GrepText {
             text: format!("{PENDING_NOTE}\n0 matches."),
             scanning: true,
@@ -157,7 +180,7 @@ fn complete(
         });
     };
 
-    let text = {
+    let (text, searchable) = {
         let guard = selection
             .index
             .picker()
@@ -166,10 +189,17 @@ fn complete(
         let picker = guard
             .as_ref()
             .ok_or_else(|| ApiError::internal("file picker not initialized"))?;
-        build(&selection, picker, &tardir)?
+        let text = build(&selection, picker, &target)?;
+        (text, target.searchable_in(picker))
     };
     let text = if selection.scanning {
         format!("{PARTIAL_NOTE}\n{text}")
+    } else if !searchable {
+        // A file the Index cannot see must not read like a completed search.
+        format!(
+            "{}\n{text}",
+            not_in_index_note(target.file().unwrap_or_default())
+        )
     } else {
         text
     };
@@ -178,6 +208,12 @@ fn complete(
         scanning: selection.scanning,
         scanned: selection.scanned,
     })
+}
+
+fn not_in_index_note(file: &str) -> String {
+    format!(
+        "Note: {file} is not in the Index (ignored, binary, empty, or over the size cap), so its contents were not searched. Read the file directly to check it."
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
