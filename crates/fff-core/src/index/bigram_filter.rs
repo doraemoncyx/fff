@@ -13,7 +13,7 @@ use crate::{FileItem, constants};
 /// 95 printable ASCII chars (32..=126) after lowercasing → ~70 distinct → 4900 possible.
 /// We cap at 5000 to cover all printable bigrams with margin.
 /// 5000 columns × 62.5KB (500k files) = 305MB. For 50k files: 30MB.
-const MAX_BIGRAM_COLUMNS: usize = 5000;
+pub(crate) const MAX_BIGRAM_COLUMNS: usize = 5000;
 
 /// Sentinel value: bigram has no allocated column.
 const NO_COLUMN: u16 = u16::MAX;
