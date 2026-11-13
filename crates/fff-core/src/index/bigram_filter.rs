@@ -146,8 +146,32 @@ impl BigramIndexBuilder {
 
     #[doc(hidden)] // `pub` (via `#[doc(hidden)]`) only for benchmarking
     pub fn add_file_content(&self, skip_builder: &Self, file_idx: usize, content: &[u8]) {
+        self.add_file_content_inner(skip_builder, file_idx, content, None);
+    }
+
+    // Same insert, and also hands back the file's key lists for a Snapshot row.
+    // `false` means the file contributed nothing (no keys, no columns).
+    pub(crate) fn add_file_content_rows(
+        &self,
+        skip_builder: &Self,
+        file_idx: usize,
+        content: &[u8],
+        row: &mut crate::index::bigram_row::Row,
+    ) -> bool {
+        row.consecutive.clear();
+        row.skip1.clear();
+        self.add_file_content_inner(skip_builder, file_idx, content, Some(row))
+    }
+
+    fn add_file_content_inner(
+        &self,
+        skip_builder: &Self,
+        file_idx: usize,
+        content: &[u8],
+        keys: Option<&mut crate::index::bigram_row::Row>,
+    ) -> bool {
         if content.len() < 2 {
-            return;
+            return false;
         }
 
         debug_assert!(file_idx < self.file_count);
@@ -158,7 +182,7 @@ impl BigramIndexBuilder {
         let (Some(consec_base), Some(skip_base)) =
             (self.col_data_ptr(), skip_builder.col_data_ptr())
         else {
-            return;
+            return false;
         };
         let bases = SlabPtrs {
             consec: consec_base,
@@ -177,14 +201,15 @@ impl BigramIndexBuilder {
             // Both paths record the identical bigram set; the split exists
             // purely for speed (see LONG_CONTENT_MIN_LEN).
             if len >= LONG_CONTENT_MIN_LEN {
-                self.add_long_content(skip_builder, n, word_idx, bit_mask, bases);
+                self.add_long_content(skip_builder, n, word_idx, bit_mask, bases, keys);
             } else {
-                self.add_short_content(skip_builder, n, word_idx, bit_mask, bases);
+                self.add_short_content(skip_builder, n, word_idx, bit_mask, bases, keys);
             }
         });
 
         self.populated.fetch_add(1, Ordering::Relaxed);
         skip_builder.populated.fetch_add(1, Ordering::Relaxed);
+        true
     }
 
     // Branchless two-pass: set every pair in stack-local bitmaps, including
@@ -198,6 +223,7 @@ impl BigramIndexBuilder {
         word_idx: usize,
         bit_mask: u64,
         bases: SlabPtrs,
+        keys: Option<&mut crate::index::bigram_row::Row>,
     ) {
         // Stack-local dedup bitsets: 1024 × u64 = 8 KB each, covers all 65536
         // bigram keys. Has to fit in L1 cache.
@@ -225,6 +251,11 @@ impl BigramIndexBuilder {
 
         self.flush_seen(&seen_consec, word_idx, bit_mask, bases.consec);
         skip_builder.flush_seen(&seen_skip, word_idx, bit_mask, bases.skip);
+
+        if let Some(row) = keys {
+            collect_keys(&seen_consec, &mut row.consecutive);
+            collect_keys(&seen_skip, &mut row.skip1);
+        }
     }
 
     #[inline(always)]
@@ -235,6 +266,7 @@ impl BigramIndexBuilder {
         word_idx: usize,
         bit_mask: u64,
         bases: SlabPtrs,
+        keys: Option<&mut crate::index::bigram_row::Row>,
     ) {
         let mut seen_consec = [0u64; SEEN_WORDS];
         let mut seen_skip = [0u64; SEEN_WORDS];
@@ -289,6 +321,11 @@ impl BigramIndexBuilder {
             n0 = n1;
             n1 = cur;
         }
+
+        if let Some(row) = keys {
+            collect_keys(&seen_consec, &mut row.consecutive);
+            collect_keys(&seen_skip, &mut row.skip1);
+        }
     }
 
     #[inline(always)]
@@ -336,11 +373,7 @@ impl BigramIndexBuilder {
             }
             for (j, &word_bits) in block.iter().enumerate() {
                 let w = blk * 8 + j;
-                let mut bits = match w & 3 {
-                    _ if w < 4 => 0,
-                    0 => word_bits & !1,
-                    _ => word_bits,
-                };
+                let mut bits = printable_keys(w, word_bits);
                 while bits != 0 {
                     let key = (w << 6 | bits.trailing_zeros() as usize) as u16;
                     bits &= bits - 1;
@@ -1052,7 +1085,7 @@ impl BigramOverlay {
     }
 }
 
-const BIGRAM_CHUNK_FILES: usize = 4 * 64;
+pub(crate) const BIGRAM_CHUNK_FILES: usize = 4 * 64;
 
 /// Sparse-column cutoff for the skip-1 sub-index. Rare skip columns add
 /// little filtering power but ~25-30% of index memory, so we drop
@@ -1094,6 +1127,7 @@ pub(crate) fn build_bigram_index(
     mtime_ns: &[u64],
     base_path: &std::path::Path,
     arena: crate::simd_path::ArenaPtr,
+    rows: Option<&crate::index::RowSink<'_>>,
 ) -> BigramFilter {
     // Snapshot rows key on (size, mtime_ns) per file.
     debug_assert_eq!(mtime_ns.len(), files.len());
@@ -1116,6 +1150,13 @@ pub(crate) fn build_bigram_index(
             .enumerate()
             .for_each(|(chunk_idx, chunk)| {
                 let base_idx = chunk_idx * BIGRAM_CHUNK_FILES;
+                let mut row = crate::index::bigram_row::Row {
+                    mtime_ns: 0,
+                    size: 0,
+                    binary: false,
+                    consecutive: Vec::new(),
+                    skip1: Vec::new(),
+                };
                 for (offset, file) in chunk.iter().enumerate() {
                     let file_idx = base_idx + offset;
 
@@ -1147,7 +1188,27 @@ pub(crate) fn build_bigram_index(
                             // Need to find a better way to do this.
                             file.set_binary(crate::types::detect_binary_content(content));
 
-                            builder.add_file_content(&skip_builder, file_idx, content);
+                            let Some(rows) = rows else {
+                                builder.add_file_content(&skip_builder, file_idx, content);
+                                return;
+                            };
+                            if !builder.add_file_content_rows(
+                                &skip_builder,
+                                file_idx,
+                                content,
+                                &mut row,
+                            ) {
+                                return;
+                            }
+                            row.mtime_ns = mtime_ns.get(file_idx).copied().unwrap_or(0);
+                            row.size = file.size;
+                            row.binary = file.is_binary();
+                            let rel = crate::index::snapshot_write::relative_path(
+                                file,
+                                arena,
+                                &mut path_buf,
+                            );
+                            rows.push(&rel, &row);
                         }
                     });
                 }
@@ -1221,6 +1282,32 @@ pub(crate) fn release_thread_buffers() {
     }
     crate::parallelism::BACKGROUND_THREAD_POOL.broadcast(|_| release());
     release();
+}
+
+// A key pairs two printable bytes; 0 is the normalizer's sentinel for every
+// non-printable byte, so the sentinel bits are the ones `flush_seen` masks out.
+#[inline(always)]
+fn printable_keys(word_idx: usize, word: u64) -> u64 {
+    if word_idx < 4 {
+        0
+    } else if word_idx & 3 == 0 {
+        word & !1
+    } else {
+        word
+    }
+}
+
+// Ascending key order, so the list is sorted and deduped exactly like the
+// columns `flush_seen` produces from the same bitset.
+fn collect_keys(seen: &[u64; SEEN_WORDS], out: &mut Vec<u16>) {
+    out.clear();
+    for (word_idx, &word) in seen.iter().enumerate() {
+        let mut bits = printable_keys(word_idx, word);
+        while bits != 0 {
+            out.push((word_idx << 6 | bits.trailing_zeros() as usize) as u16);
+            bits &= bits - 1;
+        }
+    }
 }
 
 /// Open the base directory for the `openat` fast path. Returns `-1` on
@@ -1479,6 +1566,44 @@ mod tests {
         assert_eq!(skip.columns_used(), 0);
     }
 
+    // The handed-back lists must be exactly the key sets that filled the
+    // columns: same dedup, same sentinel masking, sorted ascending.
+    #[test]
+    fn rows_carry_the_reference_key_sets_for_short_and_long_content() {
+        let long: Vec<u8> = (0..3000).map(|i| b"aAzZ09 !~\n\t\x00"[i % 12]).collect();
+        let inputs: &[&[u8]] = &[
+            b"",
+            b"a",
+            b"abc",
+            b"the quick brown fox jumps over the lazy dog",
+            b"a\x00b\x01c",
+            b"\x00\x00\x00",
+            &[0xFF, b'a', b'b', 0x80, b'c', b'd'],
+            b"aB aB aB aB",
+            &long,
+        ];
+
+        for content in inputs {
+            let consec = BigramIndexBuilder::new(1);
+            let skip = BigramIndexBuilder::new(1);
+            let mut row = crate::index::bigram_row::Row {
+                mtime_ns: 1,
+                size: content.len() as u64,
+                binary: false,
+                consecutive: Vec::new(),
+                skip1: Vec::new(),
+            };
+            let handed_back = consec.add_file_content_rows(&skip, 0, content, &mut row);
+            let (expected_consec, expected_skip) = expected_bigrams(content);
+
+            assert_eq!(handed_back, content.len() >= 2, "len {}", content.len());
+            assert_eq!(row.consecutive, expected_consec, "{content:?}");
+            assert_eq!(row.skip1, expected_skip, "{content:?}");
+            assert!(row.consecutive.windows(2).all(|w| w[0] < w[1]));
+            assert!(row.skip1.windows(2).all(|w| w[0] < w[1]));
+        }
+    }
+
     #[test]
     fn add_file_two_bytes_consec_only() {
         // With exactly 2 bytes there's no skip bigram (needs i >= 2 in the loop).
@@ -1686,7 +1811,7 @@ mod tests {
         }
 
         let mtime_ns = vec![0u64; files.len()];
-        let index = build_bigram_index(&files, &mtime_ns, base, store.as_arena_ptr());
+        let index = build_bigram_index(&files, &mtime_ns, base, store.as_arena_ptr(), None);
         let candidates = index
             .query(b"unicorn")
             .expect("the text files must be in the index");

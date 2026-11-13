@@ -272,6 +272,7 @@ pub unsafe extern "C" fn fff_create_instance_with(opts: *const FffCreateOptions)
             enable_fs_root_scanning: opts.enable_fs_root_scanning,
             enable_home_dir_scanning: opts.enable_home_dir_scanning,
             git_recency: Default::default(),
+            snapshot_store: None,
         },
         ignore_options,
     ) {
@@ -1076,6 +1077,7 @@ pub unsafe extern "C" fn fff_restart_index(
             enable_fs_root_scanning: fs_root,
             enable_home_dir_scanning: home_dir,
             git_recency,
+            snapshot_store: None,
         },
         ignore_options,
     ) {

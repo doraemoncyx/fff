@@ -36,8 +36,10 @@ a `root_prefix || kind || payload` key: a Root is then deleted with a single
   the stride-2 skip index. Both paths therefore run the same `compress` +
   `set_skip_index` code; a test asserts equality.
 - Rows are larger than the compressed columns they replace: two key lists per
-  file, estimated at ~1.2 KB on disk against 299 bytes per file in memory.
-  Disk, not memory, absorbs this; a 137k-file tree is around 160 MB.
+  file, measured at 592 bytes per file on disk against 299 bytes per file in
+  memory. Disk, not memory, absorbs this; a 137k-file tree is about 82 MB.
+- Writing rows costs the scan that produces them about 16% — the price of the
+  cache, paid once, against the ~72% of a later scan that it removes.
 - Non-indexable files get rows too — empty key list, verdict only. Without them a
   hit still pays the serial sniff pass, which measured 3.16 s of a 15.14 s cold
   scan. It also means `--no-content-indexing` stays fast, which it currently is

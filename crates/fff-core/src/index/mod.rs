@@ -2,8 +2,10 @@
 pub mod bigram_filter;
 pub(crate) use bigram_filter::*;
 
-#[allow(dead_code)] // consumed by the Snapshot store in the next ticket
 pub(crate) mod bigram_row;
+
+pub(crate) mod snapshot_write;
+pub(crate) use snapshot_write::RowSink;
 
 mod bigram_query;
 pub use bigram_query::*;

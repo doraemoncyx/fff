@@ -30,6 +30,7 @@
 
 use crate::FFFStringStorage;
 use crate::constants::{MAX_OVERFLOW_FILES, PATH_BUF_SIZE};
+use crate::dbs::SnapshotStore;
 use crate::error::Error;
 use crate::frecency::{FrecencyReader, FrecencyTracker};
 use crate::git::{GitDiscovery, GitStatusCache};
@@ -660,6 +661,9 @@ pub struct FilePickerOptions {
     /// Ranking boost for files that participated in recent commits of the
     /// current branch. Enabled with default limits unless overridden.
     pub git_recency: GitRecencyConfig,
+    /// Where scans persist their Snapshot rows. `None` (the default) writes
+    /// nothing; nothing reads rows back yet.
+    pub snapshot_store: Option<Arc<SnapshotStore>>,
 }
 
 impl Default for FilePickerOptions {
@@ -675,6 +679,7 @@ impl Default for FilePickerOptions {
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,
             git_recency: GitRecencyConfig::default(),
+            snapshot_store: None,
         }
     }
 }
@@ -711,6 +716,7 @@ pub struct FilePicker {
     enable_fs_root_scanning: bool,
     enable_home_dir_scanning: bool,
     git_recency_config: GitRecencyConfig,
+    snapshot_store: Option<Arc<SnapshotStore>>,
     trace_span: tracing::Span,
     trace_id: String,
 }
@@ -817,6 +823,10 @@ impl FilePicker {
 
     pub fn cache_budget(&self) -> &ContentCacheBudget {
         &self.cache_budget
+    }
+
+    pub(crate) fn snapshot_store(&self) -> Option<Arc<SnapshotStore>> {
+        self.snapshot_store.clone()
     }
 
     pub fn bigram_index(&self) -> Option<&BigramFilter> {
@@ -1068,6 +1078,7 @@ impl FilePicker {
             enable_fs_root_scanning: options.enable_fs_root_scanning,
             enable_home_dir_scanning: options.enable_home_dir_scanning,
             git_recency_config: options.git_recency,
+            snapshot_store: options.snapshot_store,
             trace_span,
             trace_id,
         })
@@ -1133,6 +1144,7 @@ impl FilePicker {
         let follow_symlinks = picker.follow_symlinks;
         let enable_fs_root_scanning = picker.enable_fs_root_scanning;
         let enable_home_dir_scanning = picker.enable_home_dir_scanning;
+        let snapshot_store = picker.snapshot_store();
 
         let signals = picker.scan_signals();
         let scanned_files_counter = picker.scanned_files_counter();
@@ -1176,6 +1188,7 @@ impl FilePicker {
                 ignore_options,
                 enable_fs_root_scanning,
                 enable_home_dir_scanning,
+                snapshot_store,
             },
         )
         .spawn();
@@ -2411,8 +2424,9 @@ impl FileSync {
                 && f.size <= crate::constants::MAX_INDEXABLE_FILE_SIZE as u64
         };
 
+        let mut pairs: Vec<(FileItem, u64)> = files.into_iter().zip(mtime_ns).collect();
         BACKGROUND_THREAD_POOL.install(|| {
-            files.par_sort_unstable_by(|a, b| {
+            pairs.par_sort_unstable_by(|(a, _), (b, _)| {
                 (!is_indexable(a))
                     .cmp(&!is_indexable(b))
                     // this just makes it faster in terms of allocation - we store the dir indexes
@@ -2420,7 +2434,8 @@ impl FileSync {
                     .then_with(|| a.file_name(arena).cmp(&b.file_name(arena)))
             });
         });
-        let indexable_count = files.partition_point(is_indexable);
+        let indexable_count = pairs.partition_point(|(file, _)| is_indexable(file));
+        let (files, mtime_ns): (Vec<FileItem>, Vec<u64>) = pairs.into_iter().unzip();
 
         // Ask the allocator to return freed pages to the OS.
         hint_allocator_collect();

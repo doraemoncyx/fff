@@ -9,3 +9,6 @@ pub use frecency::*;
 
 pub mod query_tracker;
 pub use query_tracker::*;
+
+pub mod snapshot_store;
+pub use snapshot_store::*;

@@ -25,6 +25,7 @@ impl Row {
         Some(out)
     }
 
+    #[allow(dead_code)] // a hit reads rows back in ticket 05
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let mut pos = 0;
         let mtime_ns = read_u64(bytes, &mut pos)?;

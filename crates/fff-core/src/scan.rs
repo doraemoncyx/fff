@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tracing::{error, info};
 
 use crate::FileSync;
+use crate::dbs::SnapshotStore;
 use crate::error::Error;
 use crate::file_picker::{FFFMode, FilePickerIgnoreOptions};
-use crate::index::{build_bigram_index, sniff_binary_for_non_indexable};
+use crate::index::{RowSink, build_bigram_index, sniff_binary_for_non_indexable};
 use crate::parallelism::BACKGROUND_THREAD_POOL;
 use crate::shared::{SharedFilePicker, SharedFrecency};
 use crate::types::ContentCacheBudget;
@@ -30,7 +31,7 @@ pub(crate) struct ScanSignals {
 }
 
 /// Which optional phases a scan should run.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default)]
 pub(crate) struct ScanConfig {
     pub(crate) warmup: bool,
     pub(crate) content_indexing: bool,
@@ -41,6 +42,8 @@ pub(crate) struct ScanConfig {
     pub(crate) ignore_options: FilePickerIgnoreOptions,
     pub(crate) enable_fs_root_scanning: bool,
     pub(crate) enable_home_dir_scanning: bool,
+    /// `None` means scans leave no Snapshot on disk and behave exactly as before.
+    pub(crate) snapshot_store: Option<Arc<SnapshotStore>>,
 }
 
 /// A fully-configured scan job ready to run on a background thread.
@@ -95,6 +98,7 @@ impl ScanJob {
             ignore_options: picker.ignore_options().clone(),
             enable_fs_root_scanning: picker.fs_root_scanning_enabled(),
             enable_home_dir_scanning: picker.home_dir_scanning_enabled(),
+            snapshot_store: picker.snapshot_store(),
         };
 
         drop(guard); // just a sanity check
@@ -348,6 +352,10 @@ impl ScanJob {
         }
 
         if config.content_indexing {
+            let rows = config
+                .snapshot_store
+                .as_ref()
+                .map(|store| RowSink::new(store, &unsafe_snapshot.base_path));
             let indexable_count = unsafe_snapshot.indexable_count.min(files.len());
             let (indexable_files, non_indexable_files) = files.split_at(indexable_count);
             let index = build_bigram_index(
@@ -355,6 +363,7 @@ impl ScanJob {
                 &mtime_ns[..indexable_count],
                 &unsafe_snapshot.base_path,
                 arena,
+                rows.as_ref(),
             );
 
             // A root change may have replaced the picker while this index was building.
@@ -380,6 +389,15 @@ impl ScanJob {
                     arena,
                     &signals.cancelled,
                 );
+            }
+
+            // Verdict rows come after the sniff: it is what decides binary for them.
+            if let (Some(rows), Some(store)) = (rows, config.snapshot_store.as_ref()) {
+                rows.push_verdicts(non_indexable_files, indexable_count, mtime_ns, arena);
+                let logical_bytes = rows.finish();
+                if let Err(e) = store.put_meta(&unsafe_snapshot.base_path, logical_bytes) {
+                    tracing::warn!(?e, "snapshot meta write failed");
+                }
             }
         } else {
             // this potentially a long running as we are not parallelizing it but it's okay
@@ -458,6 +476,80 @@ mod tests {
         picker
     }
 
+    fn scan_with_store(
+        root: &std::path::Path,
+        store: &std::sync::Arc<SnapshotStore>,
+    ) -> (u64, u64) {
+        let shared = SharedFilePicker::default();
+        let picker = collected(root);
+        let signals = picker.scan_signals();
+        *shared.write().unwrap() = Some(picker);
+        let snapshot = shared
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|picker| unsafe { picker.post_scan_snapshot() })
+            .unwrap();
+
+        let config = ScanConfig {
+            content_indexing: true,
+            snapshot_store: Some(store.clone()),
+            ..Default::default()
+        };
+        ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
+        drop(snapshot);
+
+        (
+            store.row_count(root).unwrap(),
+            store.logical_bytes(root).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_scan_leaves_one_row_per_file_and_a_meta_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "alpha_marker\n").unwrap();
+        std::fs::write(root.join("b.txt"), "beta_marker\n").unwrap();
+        std::fs::write(root.join("empty.txt"), "").unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (rows, bytes) = scan_with_store(root, &store);
+
+        assert_eq!(rows, 3, "one row per file, empty file included");
+        let meta = store.read_meta(root).unwrap().expect("meta row");
+        assert_eq!(meta.schema, crate::dbs::SNAPSHOT_SCHEMA);
+        assert_eq!(meta.logical_bytes, bytes);
+        assert!(bytes > 0);
+        assert!(meta.last_used > 0);
+    }
+
+    // Normalization folds case, so only 69 printable bytes remain: at most
+    // 69 * 69 = 4761 keys, i.e. no real file can exceed the row's key cap.
+    #[test]
+    fn a_file_with_every_printable_bigram_still_fits_a_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("ok.txt"), "ordinary content\n").unwrap();
+        let mut wide = String::new();
+        for hi in 32u8..=126 {
+            for lo in 32u8..=126 {
+                wide.push(hi as char);
+                wide.push(lo as char);
+            }
+        }
+        std::fs::write(root.join("wide.txt"), wide).unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (rows, bytes) = scan_with_store(root, &store);
+
+        assert_eq!(rows, 2);
+        assert!(bytes > 0);
+        assert!(store.read_meta(root).unwrap().is_some());
+    }
+
     #[test]
     fn replaced_picker_does_not_install_its_bigram_index_into_the_successor() {
         let old_root = tempfile::tempdir().unwrap();
@@ -489,6 +581,7 @@ mod tests {
             ignore_options: Default::default(),
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,
+            snapshot_store: None,
         };
         ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);
         drop(snapshot);
@@ -555,5 +648,28 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(picker.grep(&query, &options).matches.len(), 1);
+    }
+
+    // The indexable partition reorders files, so the ns array has to move with
+    // them: "a_large" sorts first by name but lands in the tail by size.
+    #[test]
+    fn nanosecond_mtime_follows_the_indexable_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let large = vec![b'x'; crate::constants::MAX_INDEXABLE_FILE_SIZE + 1];
+        std::fs::write(root.join("a_large.txt"), large).unwrap();
+        std::fs::write(root.join("b_small.txt"), "small text\n").unwrap();
+
+        let picker = collected(root);
+        let snapshot = unsafe { picker.post_scan_snapshot() }.unwrap();
+        assert_eq!(snapshot.indexable_count, 1, "the partition moved a file");
+
+        let arena = snapshot.arena.as_ref().unwrap().as_arena_ptr();
+        let mut buf = [0u8; crate::simd_path::PATH_BUF_SIZE];
+        for (index, file) in snapshot.files[..snapshot.base_count].iter().enumerate() {
+            let abs = file.write_absolute_path(arena, root, &mut buf);
+            let expected = crate::walk::mtime_ns(std::fs::metadata(abs).unwrap().modified().ok());
+            assert_eq!(snapshot.mtime_ns[index], expected, "{abs:?}");
+        }
     }
 }

@@ -389,6 +389,14 @@ impl FileItem {
         self.path.byte_len as usize
     }
 
+    pub(crate) fn read_relative_path<'a>(
+        &self,
+        arena: impl FFFStringStorage,
+        buf: &'a mut [u8],
+    ) -> &'a str {
+        self.path.read_to_buf(arena.arena_for(self), buf)
+    }
+
     pub fn filename_offset_in_relative_path(&self) -> usize {
         self.path.filename_offset as usize
     }

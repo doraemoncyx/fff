@@ -294,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enable_home_dir_scanning: args.enable_home_scan,
             enable_fs_root_scanning: args.enable_root_scan,
             git_recency: Default::default(),
+            snapshot_store: None,
         },
     )
     .map_err(|e| format!("Failed to init file picker: {}", e))?;
