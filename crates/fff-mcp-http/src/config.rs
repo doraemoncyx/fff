@@ -15,6 +15,7 @@ pub const DEFAULT_SCAN_WAIT_SECS: u64 = 20;
 pub const DEFAULT_CONCURRENT_SCANS: usize = 2;
 pub const DEFAULT_EVICT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
+pub const DEFAULT_SNAPSHOT_BUDGET_MB: u64 = 512;
 
 // rmcp's own loopback allowlist; config entries are added to it.
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
@@ -44,6 +45,14 @@ pub struct Config {
     pub disable_git: bool,
     pub disable_ignore_files: bool,
     pub allowed_hosts: Vec<String>,
+    /// Keep a Snapshot of each Root's Content index; `--no-snapshot` turns it off.
+    pub snapshot: bool,
+    /// Snapshot environment directory; `None` means no Snapshot.
+    pub snapshot_db: Option<PathBuf>,
+    /// Snapshot disk budget in MB; `0` behaves like `--no-snapshot`.
+    pub snapshot_budget_mb: u64,
+    /// Empty the Snapshot environment before opening it.
+    pub snapshot_reset: bool,
     /// Test-only: expose `POST /test/evict`.
     pub test_hook: bool,
 }
@@ -70,6 +79,10 @@ impl Default for Config {
             disable_git: false,
             disable_ignore_files: false,
             allowed_hosts: Vec::new(),
+            snapshot: true,
+            snapshot_db: None,
+            snapshot_budget_mb: DEFAULT_SNAPSHOT_BUDGET_MB,
+            snapshot_reset: false,
             test_hook: false,
         }
     }
@@ -97,6 +110,14 @@ impl Config {
             "refusing to bind {} without --token: the endpoint would be reachable from the network; {TOKEN_HINT}",
             self.bind
         ))
+    }
+
+    /// The Snapshot environment directory, or `None` when the Snapshot is off.
+    pub fn snapshot_path(&self) -> Option<&Path> {
+        if !self.snapshot || self.snapshot_budget_mb == 0 {
+            return None;
+        }
+        self.snapshot_db.as_deref()
     }
 
     /// rmcp's loopback hosts plus any extra names from the config file.
@@ -174,6 +195,10 @@ struct ConfigFile {
     disable_ignore_files: Option<bool>,
     idle_timeout_secs: Option<u64>,
     allowed_hosts: Option<Vec<String>>,
+    snapshot_db: Option<PathBuf>,
+    no_snapshot: Option<bool>,
+    snapshot_budget_mb: Option<u64>,
+    snapshot_reset: Option<bool>,
 }
 
 impl ConfigFile {
@@ -237,6 +262,18 @@ impl ConfigFile {
         }
         if let Some(hosts) = self.allowed_hosts {
             config.allowed_hosts.extend(hosts);
+        }
+        if let Some(path) = self.snapshot_db {
+            config.snapshot_db = Some(path);
+        }
+        if let Some(mb) = self.snapshot_budget_mb {
+            config.snapshot_budget_mb = mb;
+        }
+        if let Some(disable) = self.no_snapshot {
+            config.snapshot = !disable;
+        }
+        if let Some(reset) = self.snapshot_reset {
+            config.snapshot_reset = reset;
         }
         Ok(())
     }
@@ -404,6 +441,17 @@ mod tests {
                 .resolved_allowed_hosts()
                 .contains(&"box.test".to_string())
         );
+    }
+
+    #[test]
+    fn config_file_can_turn_the_snapshot_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        std::fs::write(&path, "no_snapshot = true\nsnapshot_budget_mb = 32\n").unwrap();
+        let config = Config::from_file(&path).unwrap();
+        assert!(!config.snapshot);
+        assert_eq!(config.snapshot_budget_mb, 32);
+        assert!(config.snapshot_path().is_none());
     }
 
     #[test]

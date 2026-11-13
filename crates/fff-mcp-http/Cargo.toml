@@ -25,6 +25,7 @@ zlob = ["fff/zlob"]
 [dependencies]
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
+dirs = { workspace = true }
 fff = { package = "fff-search", path = "../fff-core", default-features = false, version = "0.11.0", features = ["mimalloc-collect"] }
 form_urlencoded = "1"
 globset = { workspace = true }

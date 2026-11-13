@@ -112,6 +112,32 @@ pub struct Args {
     #[arg(
         long,
         value_name = "PATH",
+        help = "Snapshot environment directory (default: <cache dir>/fff/snapshot-db)"
+    )]
+    pub snapshot_db: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Do not write or read a Snapshot of any Root's Content index (default: Snapshot on)"
+    )]
+    pub no_snapshot: bool,
+
+    #[arg(
+        long,
+        value_name = "MB",
+        help = "Snapshot disk budget in MB, 0 = no Snapshot (default: 512)"
+    )]
+    pub snapshot_budget_mb: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Empty the Snapshot before opening it (default: off, existing rows kept)"
+    )]
+    pub snapshot_reset: bool,
+
+    #[arg(
+        long,
+        value_name = "PATH",
         help = "Log path hint; each launch writes <stem>+<timestamp>+<pid>.log (default: <state dir>/fff/)"
     )]
     pub log_file: Option<PathBuf>,
@@ -198,6 +224,19 @@ impl Args {
         if let Some(path) = self.frecency_db {
             config.frecency_db = Some(path);
         }
+        if let Some(path) = self.snapshot_db {
+            config.snapshot_db = Some(path);
+            config.snapshot = true;
+        }
+        if self.no_snapshot {
+            config.snapshot = false;
+        }
+        if let Some(mb) = self.snapshot_budget_mb {
+            config.snapshot_budget_mb = mb;
+        }
+        if self.snapshot_reset {
+            config.snapshot_reset = true;
+        }
         if let Some(path) = self.log_file {
             config.log_file = Some(path);
         }
@@ -224,6 +263,12 @@ impl Args {
         config.max_memory_bytes = config.max_memory_bytes.max(parse_memory("1M").unwrap());
         config.max_concurrent_scans = config.max_concurrent_scans.max(1);
         config.evict_interval = config.evict_interval.max(std::time::Duration::from_secs(1));
+        if config.snapshot_budget_mb == 0 {
+            config.snapshot = false;
+        }
+        if config.snapshot && config.snapshot_db.is_none() {
+            config.snapshot_db = default_snapshot_db();
+        }
     }
 }
 
@@ -240,6 +285,11 @@ impl From<Args> for Config {
 pub fn default_log_file() -> PathBuf {
     let base = default_log_base();
     base.join("fff").join("fff_mcp_http.log")
+}
+
+/// Default Snapshot environment, one shared directory in the platform cache.
+pub fn default_snapshot_db() -> Option<PathBuf> {
+    dirs::cache_dir().map(|base| base.join("fff").join("snapshot-db"))
 }
 
 #[cfg(windows)]
@@ -267,7 +317,7 @@ mod tests {
     use super::*;
     use crate::config::{
         DEFAULT_CONCURRENT_SCANS, DEFAULT_EVICT_INTERVAL_SECS, DEFAULT_IDLE_TIMEOUT_SECS,
-        DEFAULT_PORT, DEFAULT_SCAN_WAIT_SECS,
+        DEFAULT_PORT, DEFAULT_SCAN_WAIT_SECS, DEFAULT_SNAPSHOT_BUDGET_MB,
     };
 
     #[test]
@@ -286,6 +336,92 @@ mod tests {
                     .unwrap_or_else(|| arg.get_id().to_string())
             );
         }
+    }
+
+    #[test]
+    fn the_snapshot_options_state_their_unit_and_default() {
+        use clap::CommandFactory;
+        let command = Args::command();
+        for flag in [
+            "snapshot-db",
+            "no-snapshot",
+            "snapshot-budget-mb",
+            "snapshot-reset",
+        ] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_long() == Some(flag))
+                .unwrap_or_else(|| panic!("--{flag} is missing"));
+            let help = arg.get_help().expect("help text").to_string();
+            assert!(
+                help.contains("default"),
+                "--{flag} does not state its default: {help}"
+            );
+        }
+        let budget = command
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some("snapshot-budget-mb"))
+            .and_then(|arg| arg.get_help())
+            .map(|help| help.to_string())
+            .unwrap_or_default();
+        assert!(
+            budget.contains("MB"),
+            "--snapshot-budget-mb has no unit: {budget}"
+        );
+        assert!(
+            budget.contains("512"),
+            "--snapshot-budget-mb hides its default: {budget}"
+        );
+    }
+
+    #[test]
+    fn snapshot_flags_parse_into_config() {
+        let dir = std::env::temp_dir().join("fff-snapshot-flag-test");
+        let args = Args::parse_from([
+            "fff-mcp-http",
+            "--snapshot-db",
+            dir.to_str().unwrap(),
+            "--snapshot-budget-mb",
+            "64",
+            "--snapshot-reset",
+        ]);
+        let config = args.into_config().unwrap();
+        assert!(config.snapshot);
+        assert_eq!(config.snapshot_db.as_deref(), Some(dir.as_path()));
+        assert_eq!(config.snapshot_budget_mb, 64);
+        assert!(config.snapshot_reset);
+        assert_eq!(config.snapshot_path(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn no_snapshot_turns_it_off_and_names_no_directory() {
+        let config = Args::parse_from(["fff-mcp-http", "--no-snapshot"])
+            .into_config()
+            .unwrap();
+        assert!(!config.snapshot);
+        assert!(config.snapshot_db.is_none());
+        assert!(config.snapshot_path().is_none());
+    }
+
+    #[test]
+    fn a_zero_budget_behaves_like_no_snapshot() {
+        let config = Args::parse_from(["fff-mcp-http", "--snapshot-budget-mb", "0"])
+            .into_config()
+            .unwrap();
+        assert_eq!(config.snapshot_budget_mb, 0);
+        assert!(!config.snapshot);
+        assert!(config.snapshot_db.is_none());
+    }
+
+    #[test]
+    fn the_default_snapshot_directory_is_a_cache_path() {
+        let config = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert_eq!(config.snapshot_budget_mb, DEFAULT_SNAPSHOT_BUDGET_MB);
+        assert!(!config.snapshot_reset);
+        let path = config.snapshot_db.expect("default snapshot directory");
+        assert!(path.is_absolute(), "{}", path.display());
+        assert_eq!(path.file_name().unwrap(), "snapshot-db");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "fff");
     }
 
     #[test]

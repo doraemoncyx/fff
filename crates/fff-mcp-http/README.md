@@ -143,6 +143,35 @@ Cost, in exchange:
 `--no-content-indexing` drops the filter: less RAM, no background read pass,
 slower grep on big trees.
 
+## Snapshot
+
+A **Snapshot** is the on-disk copy of one Root's Content index: for each file, its
+bigrams, its Binary verdict, and the file identity (`size`, nanosecond `mtime`)
+the row is valid for. It holds no file or directory tables — every scan still
+walks the disk and rebuilds those — and it answers no request on its own: a row
+counts only once an Index adopts it and confirms the file still matches. A file
+whose identity no longer matches is **stale** for that row alone; one stale file
+never discards the rest of the Snapshot.
+
+By default the environment lives in the platform cache directory:
+`%LOCALAPPDATA%\fff\snapshot-db` on Windows, `~/.cache/fff/snapshot-db`
+elsewhere. `--snapshot-db <PATH>` names a different environment directory, with
+the same semantics as `--frecency-db`; `--snapshot-reset` deletes the
+environment's data before opening it.
+
+- `--no-snapshot` turns the Snapshot off, and `--snapshot-budget-mb 0` does the
+  same. Off means nothing is written and nothing is read.
+- `--snapshot-budget-mb <MB>` (default `512`) caps the disk the Snapshot may
+  use. Enforcement arrives with the read path; for now the value only decides
+  whether the Snapshot is on.
+- The database file does not shrink after deletions: LMDB keeps the space a
+  deleted Root occupied, so `data.mdb` stays at its high-water mark.
+  `--snapshot-reset` is the way to reclaim it.
+
+Right now the Snapshot is write-only: it cannot accelerate anything until the
+read path lands, so every scan still builds the Content index from file
+contents and every restart still pays for it.
+
 ## Scans
 
 At most `--max-concurrent-scans` (default 2) initial scans run at once; the
@@ -199,6 +228,10 @@ disable_git = false
 disable_ignore_files = false
 idle_timeout_secs = 3600
 allowed_hosts = ["build-box.local"]
+snapshot_db = "C:/Users/me/AppData/Local/fff/snapshot-db"
+no_snapshot = false
+snapshot_budget_mb = 512
+snapshot_reset = false
 ```
 
 ## Lifecycle

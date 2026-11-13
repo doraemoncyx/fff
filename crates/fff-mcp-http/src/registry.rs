@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use fff::{FilePickerIgnoreOptions, SharedFilePicker, SharedFrecency};
+use fff::{FilePickerIgnoreOptions, SharedFilePicker, SharedFrecency, SnapshotStore};
 use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
@@ -31,6 +31,7 @@ pub struct Registry {
     tick: AtomicU64,
     config: Arc<Config>,
     frecency: SharedFrecency,
+    snapshot: Option<Arc<SnapshotStore>>,
     ignore: FilePickerIgnoreOptions,
     cursors: Mutex<CursorStore>,
     last_activity: AtomicU64,
@@ -67,6 +68,7 @@ impl Registry {
                 }
             }
         }
+        let snapshot = open_snapshot(&config);
 
         Ok(Self {
             roots: RwLock::new(Vec::new()),
@@ -76,6 +78,7 @@ impl Registry {
             tick: AtomicU64::new(0),
             config: Arc::new(config),
             frecency,
+            snapshot,
             // Skip rules are snapshotted per Index; changed rules need new Roots.
             ignore,
             cursors: Mutex::new(CursorStore::new()),
@@ -196,7 +199,13 @@ impl Registry {
         };
 
         tracing::info!(root = %tardir.display(), "creating index");
-        let index = match Index::create(tardir, &self.config, &self.frecency, &self.ignore) {
+        let index = match Index::create(
+            tardir,
+            &self.config,
+            &self.frecency,
+            &self.ignore,
+            self.snapshot.clone(),
+        ) {
             Ok(index) => Arc::new(index),
             Err(error) => {
                 drop(permit);
@@ -422,6 +431,41 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// One store per process; a Snapshot that cannot open disables itself.
+fn open_snapshot(config: &Config) -> Option<Arc<SnapshotStore>> {
+    let path = config.snapshot_path()?;
+    if config.snapshot_reset {
+        reset_snapshot_files(path);
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match SnapshotStore::open(path) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            tracing::warn!(?error, path = %path.display(), "snapshot disabled");
+            None
+        }
+    }
+}
+
+// Only the env's own files are ours; never wipe a directory we were pointed at.
+fn reset_snapshot_files(path: &Path) {
+    for name in ["data.mdb", "lock.mdb"] {
+        let file = path.join(name);
+        if !file.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&file) {
+            tracing::warn!(
+                ?error,
+                path = %file.display(),
+                "cannot empty the snapshot, continuing with what is readable"
+            );
+        }
+    }
 }
 
 // Hold the permit until the initial walk finishes, then let the next scan in.

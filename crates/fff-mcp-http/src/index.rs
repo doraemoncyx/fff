@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use fff::{
     FFFMode, FilePicker, FilePickerIgnoreOptions, FilePickerOptions, SharedFilePicker,
-    SharedFrecency,
+    SharedFrecency, SnapshotStore,
 };
 
 use crate::config::Config;
@@ -39,6 +40,7 @@ impl Index {
         config: &Config,
         frecency: &SharedFrecency,
         ignore: &FilePickerIgnoreOptions,
+        snapshot: Option<Arc<SnapshotStore>>,
     ) -> Result<Self, ApiError> {
         let picker = SharedFilePicker::default();
         FilePicker::new_with_shared_state_and_ignore_options(
@@ -51,6 +53,7 @@ impl Index {
                 follow_symlinks: config.follow_symlinks,
                 enable_mmap_cache: false,
                 enable_content_indexing: config.content_indexing,
+                snapshot_store: snapshot,
                 ..Default::default()
             },
             ignore.clone(),
