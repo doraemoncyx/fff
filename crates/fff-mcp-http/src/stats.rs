@@ -24,6 +24,11 @@ pub struct SnapshotStats {
     pub misses: u64,
     pub bytes: u64,
     pub roots: u64,
+    /// The LMDB map the store may use, the volume limit it grows towards
+    /// (`null` when unmeasurable), and how many times it has grown.
+    pub map_bytes: u64,
+    pub map_ceiling: Option<u64>,
+    pub map_grows: u64,
     /// Drain-thread progress. A `queued_bytes` that stops falling while `commits`
     /// stalls is a writer, not a grep, burning the CPU.
     pub commits: u64,
@@ -81,6 +86,9 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
                 misses: store.misses(),
                 bytes: store.bytes(),
                 roots: store.roots(),
+                map_bytes: store.map_bytes(),
+                map_ceiling: store.map_ceiling(),
+                map_grows: store.map_grows(),
                 commits: writer.commits,
                 rows: writer.rows,
                 dropped: writer.dropped,

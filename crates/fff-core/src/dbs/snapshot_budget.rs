@@ -56,6 +56,7 @@ impl SnapshotBudget {
     // One pass over the keys at startup fills the index; nothing else reads it
     // back from disk, so a commit costs no traversal.
     pub(crate) fn load(&self, env: &SharedEnv, db: &Database<Bytes, Bytes>) -> Result<()> {
+        let _txn = env.enter_txn();
         let rtxn = env.read_txn().map_err(|source| Error::DbStartReadTxn {
             db: SnapshotStore::LABEL,
             source,

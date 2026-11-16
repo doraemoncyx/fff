@@ -865,6 +865,7 @@ dependencies = [
  "mimalloc",
  "neo_frizbee",
  "notify",
+ "page_size",
  "parking_lot",
  "pathdiff",
  "proptest",
@@ -880,6 +881,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "windows-sys 0.60.2",
  "zlob",
 ]
 

@@ -135,7 +135,8 @@ the whole budget is kept with a warning rather than thrashing.
 `/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`, and per-Index
 `root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
 `estimated_bytes`, ordered by least recently used. `snapshot` holds the disk
-cache's `hits`/`misses`/`bytes`/`roots`, or `null` when it is not in use.
+cache's `hits`/`misses`/`bytes`/`roots` and its `map_bytes`/`map_ceiling`/
+`map_grows`, or `null` when it is not in use.
 
 ## Content index
 
@@ -189,6 +190,12 @@ environment's data before opening it.
 - The database file does not shrink after deletions: LMDB keeps the space a
   deleted Root occupied, so `data.mdb` stays at its high-water mark.
   `--snapshot-reset` is the way to reclaim it.
+- The map LMDB writes into starts at 2 GiB and grows by doubling when a commit
+  answers `MDB_MAP_FULL`, up to the free space of the volume minus a reserve
+  (1 GiB, or 5% of the volume if that is larger). Unlike the budget, this is not
+  a knob: it exists so a longer cache never silently stops being written, and it
+  never takes the last gigabyte of a disk. A commit that cannot grow is a lost
+  batch and the usual one `warn` line.
 
 A second scan of an unchanged tree reads no file contents at all: it replays each
 row into the same content-index builder the file pass uses, then serves grep from
@@ -213,13 +220,17 @@ from the frecency database living at the wrong path.
 ```json
 "snapshot": {
   "hits": 120848, "misses": 0, "bytes": 80936960, "roots": 1,
+  "map_bytes": 2147483648, "map_ceiling": 695784701952, "map_grows": 1,
   "commits": 412, "rows": 120848, "dropped": 0, "queued_bytes": 0, "busy": false
 }
 ```
 
 `hits` and `misses` are process-wide and accumulate across scans (a scan's own
 line is the `snapshot hit rate` log entry, with its content reads and sniffed
-count); `bytes` and `roots` come from the live budget index. `commits`, `rows`,
+count); `bytes` and `roots` come from the live budget index. `map_bytes` is the
+map LMDB may use, `map_ceiling` the volume limit it grows towards (`null` when
+the volume cannot be measured), and `map_grows` how many times it has grown this
+process. `commits`, `rows`,
 `dropped`, `queued_bytes` and `busy` are the drain thread's own counters: a
 `queued_bytes` that stops falling while `commits` stalls is a writer occupying
 the CPU, not a slow grep. `null` means no Snapshot is in use — off by config,

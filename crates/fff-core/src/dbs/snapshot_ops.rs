@@ -5,6 +5,7 @@ use heed::types::{Bytes, SerdeBincode};
 use heed::{Database, RwTxn};
 
 use super::env_pool::SharedEnv;
+use super::map_growth::with_map_growth;
 use super::snapshot_budget::SnapshotBudget;
 use super::snapshot_store::{
     KIND_FILE, ROOT_PREFIX_LEN, SNAPSHOT_SCHEMA, SnapshotMeta, SnapshotStore, file_prefix,
@@ -25,24 +26,27 @@ pub(crate) fn commit_rows(
     prefix: &[u8; ROOT_PREFIX_LEN],
     rows: &[([u8; 32], Vec<u8>)],
 ) -> Result<()> {
-    let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
-        db: SnapshotStore::LABEL,
-        source,
-    })?;
-    for (payload, value) in rows {
-        db.put(
-            &mut wtxn,
-            &key_bytes(prefix, KIND_FILE, payload),
-            value.as_slice(),
-        )
-        .map_err(|source| Error::DbWrite {
+    with_map_growth(env, || {
+        let _txn = env.enter_txn();
+        let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
             db: SnapshotStore::LABEL,
             source,
         })?;
-    }
-    wtxn.commit().map_err(|source| Error::DbCommit {
-        db: SnapshotStore::LABEL,
-        source,
+        for (payload, value) in rows {
+            db.put(
+                &mut wtxn,
+                &key_bytes(prefix, KIND_FILE, payload),
+                value.as_slice(),
+            )
+            .map_err(|source| Error::DbWrite {
+                db: SnapshotStore::LABEL,
+                source,
+            })?;
+        }
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: SnapshotStore::LABEL,
+            source,
+        })
     })
 }
 
@@ -52,14 +56,17 @@ pub(crate) fn put_meta(
     prefix: &[u8; ROOT_PREFIX_LEN],
     meta: &SnapshotMeta,
 ) -> Result<()> {
-    let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
-        db: SnapshotStore::LABEL,
-        source,
-    })?;
-    write_meta(&mut wtxn, db, prefix, meta)?;
-    wtxn.commit().map_err(|source| Error::DbCommit {
-        db: SnapshotStore::LABEL,
-        source,
+    with_map_growth(env, || {
+        let _txn = env.enter_txn();
+        let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
+            db: SnapshotStore::LABEL,
+            source,
+        })?;
+        write_meta(&mut wtxn, db, prefix, meta)?;
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: SnapshotStore::LABEL,
+            source,
+        })
     })
 }
 
@@ -72,7 +79,10 @@ pub(crate) fn sweep_rows(
     keep: &HashSet<[u8; 32]>,
     root: &str,
 ) -> Result<Sweep> {
-    let (doomed, remaining) = collect_orphans(env, db, prefix, keep)?;
+    let (doomed, remaining) = {
+        let _txn = env.enter_txn();
+        collect_orphans(env, db, prefix, keep)?
+    };
 
     let meta = SnapshotMeta {
         schema: SNAPSHOT_SCHEMA,
@@ -81,21 +91,24 @@ pub(crate) fn sweep_rows(
         last_used: now_secs(),
         root: root.to_string(),
     };
-    let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
-        db: SnapshotStore::LABEL,
-        source,
-    })?;
-    for payload in &doomed {
-        db.delete(&mut wtxn, &key_bytes(prefix, KIND_FILE, payload))
-            .map_err(|source| Error::DbWrite {
-                db: SnapshotStore::LABEL,
-                source,
-            })?;
-    }
-    write_meta(&mut wtxn, db, prefix, &meta)?;
-    wtxn.commit().map_err(|source| Error::DbCommit {
-        db: SnapshotStore::LABEL,
-        source,
+    with_map_growth(env, || {
+        let _txn = env.enter_txn();
+        let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
+            db: SnapshotStore::LABEL,
+            source,
+        })?;
+        for payload in &doomed {
+            db.delete(&mut wtxn, &key_bytes(prefix, KIND_FILE, payload))
+                .map_err(|source| Error::DbWrite {
+                    db: SnapshotStore::LABEL,
+                    source,
+                })?;
+        }
+        write_meta(&mut wtxn, db, prefix, &meta)?;
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: SnapshotStore::LABEL,
+            source,
+        })
     })?;
 
     Ok(Sweep {
@@ -109,14 +122,18 @@ pub(crate) fn delete_root(
     db: &Database<Bytes, Bytes>,
     prefix: &[u8; ROOT_PREFIX_LEN],
 ) -> Result<bool> {
-    let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
-        db: SnapshotStore::LABEL,
-        source,
-    })?;
-    let deleted = delete_prefix(&mut wtxn, db, prefix)?;
-    wtxn.commit().map_err(|source| Error::DbCommit {
-        db: SnapshotStore::LABEL,
-        source,
+    let deleted = with_map_growth(env, || {
+        let _txn = env.enter_txn();
+        let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
+            db: SnapshotStore::LABEL,
+            source,
+        })?;
+        let deleted = delete_prefix(&mut wtxn, db, prefix)?;
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: SnapshotStore::LABEL,
+            source,
+        })?;
+        Ok(deleted)
     })?;
     Ok(deleted > 0)
 }
@@ -132,16 +149,19 @@ pub(crate) fn enforce_limits(
         return Ok(0);
     }
 
-    let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
-        db: SnapshotStore::LABEL,
-        source,
-    })?;
-    for prefix in &victims {
-        delete_prefix(&mut wtxn, db, prefix)?;
-    }
-    wtxn.commit().map_err(|source| Error::DbCommit {
-        db: SnapshotStore::LABEL,
-        source,
+    with_map_growth(env, || {
+        let _txn = env.enter_txn();
+        let mut wtxn = env.write_txn().map_err(|source| Error::DbStartWriteTxn {
+            db: SnapshotStore::LABEL,
+            source,
+        })?;
+        for prefix in &victims {
+            delete_prefix(&mut wtxn, db, prefix)?;
+        }
+        wtxn.commit().map_err(|source| Error::DbCommit {
+            db: SnapshotStore::LABEL,
+            source,
+        })
     })?;
 
     for prefix in &victims {

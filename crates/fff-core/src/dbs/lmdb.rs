@@ -111,7 +111,8 @@ pub(crate) fn spawn_lmdb_gc<T: LmdbStore>(shared: Arc<RwLock<Option<T>>>) {
 pub(crate) trait LmdbStore: Sized + Send + Sync + 'static {
     /// Short label used to defferintiate different instances of this trait
     const LABEL: &'static str;
-    /// LMDB map size in bytes. Must be a multiple of the OS page size.
+    /// LMDB map size in bytes at open. Must be a multiple of the OS page size.
+    /// A store that calls `with_map_growth` grows it past this; the others stay put.
     const MAP_SIZE: usize;
     /// Number of named sub-databases. `0` for single-db envs.
     const MAX_DBS: u32;
@@ -162,6 +163,7 @@ pub(crate) trait LmdbStore: Sized + Send + Sync + 'static {
         let db = Self::LABEL;
         // mdb_dbi_open must not run from concurrent txns in this process.
         let _dbi_guard = env.lock_dbi_open();
+        let _txn = env.enter_txn();
 
         let rtxn = env
             .read_txn()

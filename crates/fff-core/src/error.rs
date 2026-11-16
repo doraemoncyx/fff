@@ -44,6 +44,12 @@ pub enum Error {
         open_as: &'static str,
         requested_as: &'static str,
     },
+    #[error("Failed to grow the LMDB map of {path}: {source}")]
+    EnvResize {
+        path: std::path::PathBuf,
+        #[source]
+        source: heed::Error,
+    },
     #[error(
         "The {db} database at {path} is still used by {holders} other tracker(s) in this process"
     )]
@@ -130,3 +136,16 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    // True when LMDB refused a write because the map has no room left.
+    pub(crate) fn is_map_full(&self) -> bool {
+        match self {
+            Self::DbWrite { source, .. }
+            | Self::DbCommit { source, .. }
+            | Self::DbStartWriteTxn { source, .. }
+            | Self::DbStartReadTxn { source, .. } => crate::lmdb::is_map_full(source),
+            _ => false,
+        }
+    }
+}

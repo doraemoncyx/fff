@@ -9,7 +9,7 @@ use heed::Database;
 use heed::types::{Bytes, SerdeBincode};
 use serde::{Deserialize, Serialize};
 
-use super::env_pool::SharedEnv;
+use super::env_pool::{EnvSpec, SharedEnv};
 use super::snapshot_budget::SnapshotBudget;
 use super::snapshot_ops;
 use super::snapshot_state::SnapshotState;
@@ -91,8 +91,30 @@ impl SnapshotStore {
 
     // `budget_bytes` caps the sum of every Root's rows; `u64::MAX` keeps them all.
     pub fn open_with_budget(path: &Path, budget_bytes: u64) -> Result<Self> {
+        Self::open_inner(path, budget_bytes, Self::MAP_SIZE)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_with_map_size(
+        path: &Path,
+        budget_bytes: u64,
+        map_size: usize,
+    ) -> Result<Self> {
+        Self::open_inner(path, budget_bytes, map_size)
+    }
+
+    fn open_inner(path: &Path, budget_bytes: u64, map_size: usize) -> Result<Self> {
         claim_directory(path)?;
-        let (env, health) = Self::open_env(path)?;
+        let env = SharedEnv::get_or_open(
+            path,
+            &EnvSpec {
+                label: Self::LABEL,
+                map_size,
+                max_dbs: Self::MAX_DBS,
+                size_cap_bytes: Self::SIZE_CAP_BYTES,
+            },
+        )?;
+        let health = env.health().clone();
         let db: Database<Bytes, Bytes> = Self::open_database_safe(&env, None)?;
         let budget = Arc::new(SnapshotBudget::new(budget_bytes));
         if budget.is_bounded()
@@ -135,6 +157,19 @@ impl SnapshotStore {
 
     pub fn roots(&self) -> u64 {
         self.budget.root_count()
+    }
+
+    // The map LMDB is allowed to use, and the volume limit it is grown towards.
+    pub fn map_bytes(&self) -> u64 {
+        self.env.map_size() as u64
+    }
+
+    pub fn map_ceiling(&self) -> Option<u64> {
+        self.env.map_ceiling()
+    }
+
+    pub fn map_grows(&self) -> u64 {
+        self.env.map_grows()
     }
 
     // The write side, so a stalled drain thread is visible without a debugger.
@@ -224,6 +259,7 @@ impl SnapshotStore {
             return Ok(());
         }
         out.reserve(payloads.len());
+        let _txn = self.env.enter_txn();
         let rtxn = match self.env.read_txn() {
             Ok(rtxn) => rtxn,
             Err(source) => {
@@ -258,6 +294,7 @@ impl SnapshotStore {
         if self.is_disabled() {
             return Ok(None);
         }
+        let _txn = self.env.enter_txn();
         let rtxn = match self.env.read_txn() {
             Ok(rtxn) => rtxn,
             Err(source) => {
@@ -376,6 +413,7 @@ impl SnapshotStore {
         if self.is_disabled() {
             return Ok(());
         }
+        let _txn = self.env.enter_txn();
         let rtxn = match self.env.read_txn() {
             Ok(rtxn) => rtxn,
             Err(source) => {
@@ -1027,6 +1065,35 @@ mod tests {
             .unwrap();
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(Option::is_none), "{out:?}");
+    }
+
+    // A batch that overflows a small map must grow the file instead of losing
+    // the batch and latching the store off.
+    #[test]
+    fn a_batch_that_overflows_a_small_map_grows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let page = page_size::get() as u64;
+        let store =
+            SnapshotStore::open_with_map_size(&root.join("db"), u64::MAX, (16 * page) as usize)
+                .unwrap();
+        assert_eq!(store.map_bytes(), 16 * page);
+        assert_eq!(store.map_grows(), 0);
+
+        let total = ROW_BATCH * 2;
+        let rows = (0..total).map(|i| {
+            let mut payload = [0u8; 32];
+            payload[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            (payload, vec![7u8; 400])
+        });
+        store.put_rows(root, rows).unwrap();
+
+        assert!(!store.is_disabled(), "a full map is not a failure");
+        assert!(store.map_grows() >= 1, "the map never grew");
+        assert!(store.map_bytes() > 16 * page);
+        let ceiling = store.map_ceiling().expect("volume ceiling");
+        assert!(store.map_bytes() <= ceiling.max(16 * page));
+        assert_eq!(store.row_count(root).unwrap(), total as u64);
     }
 
     #[test]

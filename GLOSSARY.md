@@ -46,6 +46,17 @@ adopts a row and confirms that row still matches the file on disk.
 
 _Not_: cached Index, index, cache entry, file table backup.
 
+## Map ceiling
+
+The most the LMDB map of a Snapshot may grow to: the free space of the volume
+holding the environment, minus a reserve (a gigabyte, or 5% of the volume if
+that is more). It is not the Snapshot budget — that one counts row bytes and
+shrinks the environment by deleting Roots; the ceiling is the volume's own
+limit and is never exceeded, so a full disk loses writes instead of the file
+growing until the disk is full.
+
+_Not_: budget, quota, disk size.
+
 ## Stale
 
 A Snapshot is stale with respect to a file when the file on disk no longer

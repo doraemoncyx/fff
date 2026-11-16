@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use crate::lmdb::DbHealth;
 
 pub(crate) struct EnvSpec {
     pub label: &'static str,
+    /// Initial map size; a store that grows its map may exceed it later.
     pub map_size: usize,
     pub max_dbs: u32,
     pub size_cap_bytes: u64,
@@ -23,11 +24,15 @@ pub(crate) struct PooledEnv {
     key: PathBuf,
     /// lmdb's env spec label
     label: &'static str,
-    map_size: usize,
+    map_size: AtomicUsize,
+    map_grows: AtomicU64,
     max_dbs: u32,
     health: DbHealth,
     gc_started: AtomicBool,
     dbi_lock: Mutex<()>,
+    // Resizing remaps the file, which invalidates every pointer a live txn
+    // holds. Txns take it shared, growth takes it exclusive.
+    txn_gate: RwLock<()>,
 }
 
 impl Drop for PooledEnv {
@@ -77,8 +82,9 @@ impl SharedEnv {
                 let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(existing) = pool.get(&path).and_then(Weak::upgrade) {
                     drop(pool);
+                    // The spec's map size is a floor: this env only ever grows.
                     if existing.label != spec.label
-                        || existing.map_size != spec.map_size
+                        || existing.map_size.load(Ordering::Relaxed) < spec.map_size
                         || existing.max_dbs != spec.max_dbs
                     {
                         return Err(Error::EnvSpecMismatch {
@@ -109,11 +115,13 @@ impl SharedEnv {
                             env,
                             key: path.clone(),
                             label: spec.label,
-                            map_size: spec.map_size,
+                            map_size: AtomicUsize::new(spec.map_size),
+                            map_grows: AtomicU64::new(0),
                             max_dbs: spec.max_dbs,
                             health: DbHealth::new(),
                             gc_started: AtomicBool::new(false),
                             dbi_lock: Mutex::new(()),
+                            txn_gate: RwLock::new(()),
                         });
                         pool.insert(path.clone(), Arc::downgrade(&entry));
                         drop(pool);
@@ -181,6 +189,38 @@ impl SharedEnv {
 
     pub(crate) fn health(&self) -> &DbHealth {
         &self.0.health
+    }
+
+    pub(crate) fn db_dir(&self) -> &Path {
+        &self.0.key
+    }
+
+    pub(crate) fn map_size(&self) -> usize {
+        self.0.map_size.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn map_grows(&self) -> u64 {
+        self.0.map_grows.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_resized(&self, size: usize) {
+        self.0.map_size.store(size, Ordering::Relaxed);
+        self.0.map_grows.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn enter_txn(&self) -> RwLockReadGuard<'_, ()> {
+        self.0
+            .txn_gate
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // Waits until no transaction is live in this process.
+    pub(crate) fn enter_resize(&self) -> RwLockWriteGuard<'_, ()> {
+        self.0
+            .txn_gate
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     // First caller wins: GC runs once per opened env, not once per tracker.

@@ -88,6 +88,7 @@ memmap2 = { workspace = true }
 neo_frizbee = { workspace = true }
 notify = { workspace = true }
 notify-debouncer-full = { workspace = true }
+page_size = "0.6"
 parking_lot = { workspace = true }
 pathdiff = { workspace = true }
 regex = { workspace = true }
@@ -101,6 +102,7 @@ mimalloc = { version = "0.1", optional = true, features = ["local_dynamic_tls"] 
 # Platform-specific: dunce for Windows to avoid \\?\ extended path prefix
 [target.'cfg(windows)'.dependencies]
 dunce = { workspace = true }
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
 
 # signal-hook only compiles on unix; we wrap the SIGSEGV handler behind cfg(unix)
 [target.'cfg(unix)'.dependencies]

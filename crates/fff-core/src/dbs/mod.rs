@@ -1,5 +1,6 @@
 pub(crate) mod env_pool;
 pub(crate) mod lmdb;
+pub(crate) mod map_growth;
 
 pub mod db_healthcheck;
 pub use db_healthcheck::{DbHealth, DbHealthChecker};
