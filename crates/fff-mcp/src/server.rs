@@ -908,7 +908,7 @@ impl FffServer {
 impl FffServer {
     #[tool(
         name = "find_files",
-        description = "Find indexed files by path fragment, glob, or regex. Fragments treat hyphens and underscores alike before fuzzy suggestions. Put a known directory in path. An empty query lists files in scope.",
+        description = "Find indexed files by path fragment, glob, or regex. Fragments treat hyphens and underscores alike before fuzzy suggestions. Put a known directory in path. An empty query lists files in scope. Only files are indexed: a directory name matches nothing, so scope the search with path instead of querying the directory's name.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
