@@ -171,9 +171,16 @@ impl SnapshotWriter {
         queue.jobs.is_empty() && !queue.busy
     }
 
-    #[cfg(test)]
     pub(crate) fn counters(&self) -> &WriterCounters {
         &self.counters
+    }
+
+    // Queued bytes and whether a job is in flight. Both are what a stalled
+    // writer looks like from outside.
+    pub(crate) fn depth(&self) -> (u64, bool) {
+        let (lock, _) = &*self.shared;
+        let queue = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        (queue.queued_bytes, queue.busy)
     }
 
     #[cfg(test)]

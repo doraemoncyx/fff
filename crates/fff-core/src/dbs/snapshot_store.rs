@@ -43,6 +43,16 @@ pub struct SnapshotMeta {
     pub root: String,
 }
 
+/// Write-side progress of the drain thread: what it finished, what it still owes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriterStats {
+    pub commits: u64,
+    pub rows: u64,
+    pub dropped: u64,
+    pub queued_bytes: u64,
+    pub busy: bool,
+}
+
 /// One LMDB env holding every Root's Snapshot rows, keyed by root prefix.
 pub struct SnapshotStore {
     env: SharedEnv,
@@ -125,6 +135,19 @@ impl SnapshotStore {
 
     pub fn roots(&self) -> u64 {
         self.budget.root_count()
+    }
+
+    // The write side, so a stalled drain thread is visible without a debugger.
+    pub fn writer_stats(&self) -> WriterStats {
+        let counters = self.writer.counters();
+        let (queued_bytes, busy) = self.writer.depth();
+        WriterStats {
+            commits: counters.commits.load(std::sync::atomic::Ordering::Relaxed),
+            rows: counters.rows.load(std::sync::atomic::Ordering::Relaxed),
+            dropped: counters.dropped.load(std::sync::atomic::Ordering::Relaxed),
+            queued_bytes,
+            busy,
+        }
     }
 
     pub(crate) fn record_scan(&self, hits: u64, misses: u64) {
@@ -326,26 +349,17 @@ impl SnapshotStore {
 
     #[cfg(test)]
     pub(crate) fn commits(&self) -> u64 {
-        self.writer
-            .counters()
-            .commits
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.writer_stats().commits
     }
 
     #[cfg(test)]
     pub(crate) fn rows_written(&self) -> u64 {
-        self.writer
-            .counters()
-            .rows
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.writer_stats().rows
     }
 
     #[cfg(test)]
     pub(crate) fn dropped_batches(&self) -> u64 {
-        self.writer
-            .counters()
-            .dropped
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.writer_stats().dropped
     }
 
     #[cfg(test)]

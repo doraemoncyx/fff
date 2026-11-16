@@ -281,6 +281,13 @@ fn stats_report_hits_after_a_second_scan_and_only_grow() {
         assert_eq!(cold["hits"], 0, "a cold scan hits nothing: {cold}");
         assert!(cold["misses"].as_u64().unwrap() > 0, "{cold}");
         assert_eq!(cold["roots"], 1, "{cold}");
+        // The drain thread's own counters, so a stalled writer shows up in
+        // /stats instead of needing a debugger.
+        assert!(cold["commits"].as_u64().unwrap() > 0, "{cold}");
+        assert!(cold["rows"].as_u64().unwrap() > 0, "{cold}");
+        assert!(cold["dropped"].is_u64(), "{cold}");
+        assert!(cold["queued_bytes"].is_u64(), "{cold}");
+        assert!(cold["busy"].is_boolean(), "{cold}");
         assert!(server.shutdown_within(Duration::from_secs(30)));
     }
 

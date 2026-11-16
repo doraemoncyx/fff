@@ -50,8 +50,9 @@ request to get the complete set. `served_by` names the Roots that were merged;
 
 Any one of `querystr` (canonical), `query` or `pattern` names the query; the
 tool's `inputSchema` advertises all three, and a JSON array is joined with
-spaces. `tardir` is the only required key, and the schema accepts any one
-identifier key — passing two in one call is a duplicate-field error, not a
+spaces. `tardir` is the only required key, and no identifier key is required:
+omitting it is the same as passing `""`, which lists every file in scope.
+Passing two identifier keys in one call is a duplicate-field error, not a
 precedence rule. `tardir` is an absolute path, a directory or a single file: the
 directory — or the file's parent — is indexed on demand and an error is returned
 if the path does not exist.
@@ -78,7 +79,8 @@ routes search file contents. Both tools require `tardir`, exactly like
 
 `grep` takes any one of `query` (canonical), `pattern` and `querystr` — the same
 three keys are advertised on both servers, so the curl name matches `/search`; a
-JSON array is joined with spaces. It also takes `path`, `paths`, `globs`,
+JSON array is joined with spaces. Omitting all three means an empty query, which
+matches nothing. It also takes `path`, `paths`, `globs`,
 `hidden`, `mode` (`auto` default, `regex`, `literal`), `case` (`smart`,
 `sensitive`, `insensitive`), `maxResults` (default 100, or 30 with
 `definitions_only`, clamped to 200), `cursor`, `output_mode` (`content` default,
@@ -209,14 +211,21 @@ from the frecency database living at the wrong path.
 `/stats` gains a `snapshot` object once a store is open:
 
 ```json
-"snapshot": { "hits": 120848, "misses": 0, "bytes": 80936960, "roots": 1 }
+"snapshot": {
+  "hits": 120848, "misses": 0, "bytes": 80936960, "roots": 1,
+  "commits": 412, "rows": 120848, "dropped": 0, "queued_bytes": 0, "busy": false
+}
 ```
 
 `hits` and `misses` are process-wide and accumulate across scans (a scan's own
 line is the `snapshot hit rate` log entry, with its content reads and sniffed
-count); `bytes` and `roots` come from the live budget index. `null` means no
-Snapshot is in use — off by config, unopenable, or latched off by a failure —
-never a zeroed object that looks like a cold cache.
+count); `bytes` and `roots` come from the live budget index. `commits`, `rows`,
+`dropped`, `queued_bytes` and `busy` are the drain thread's own counters: a
+`queued_bytes` that stops falling while `commits` stalls is a writer occupying
+the CPU, not a slow grep. `null` means no Snapshot is in use — off by config,
+unopenable, or latched off by a failure — never a zeroed object that looks like a
+cold cache. `docs/PROFILING.md` covers what to do when these numbers point at
+the writer.
 
 ## Scans
 
@@ -235,6 +244,16 @@ restart (or a different tardir) to rescan an existing Root.
 
 All of the above require the `zlob` walker; a ripgrep-only build refuses to
 start with skip options rather than silently indexing everything.
+
+## Symlinked directories
+
+Files inside a symlinked directory are indexed even with `--follow-symlinks`
+off (the zlob Windows backend cannot follow links, so the walk marks the link
+and a second pass adds its target's files). That pass stops at 50k added files
+and 32 levels deep, whichever comes first. `--no-symlink-expand` skips it
+entirely — the link is still listed, its contents are not. Use it for Roots
+whose links point at resource trees (game assets, another checkout), where the
+expansion adds thousands of files the Root does not own.
 
 ## Access control
 

@@ -24,6 +24,13 @@ pub struct SnapshotStats {
     pub misses: u64,
     pub bytes: u64,
     pub roots: u64,
+    /// Drain-thread progress. A `queued_bytes` that stops falling while `commits`
+    /// stalls is a writer, not a grep, burning the CPU.
+    pub commits: u64,
+    pub rows: u64,
+    pub dropped: u64,
+    pub queued_bytes: u64,
+    pub busy: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,11 +74,19 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
         scans_in_flight: registry.scans_in_flight(),
         peak_scans_in_flight: registry.peak_scans_in_flight(),
         content_indexing: registry.config().content_indexing,
-        snapshot: registry.snapshot_store().map(|store| SnapshotStats {
-            hits: store.hits(),
-            misses: store.misses(),
-            bytes: store.bytes(),
-            roots: store.roots(),
+        snapshot: registry.snapshot_store().map(|store| {
+            let writer = store.writer_stats();
+            SnapshotStats {
+                hits: store.hits(),
+                misses: store.misses(),
+                bytes: store.bytes(),
+                roots: store.roots(),
+                commits: writer.commits,
+                rows: writer.rows,
+                dropped: writer.dropped,
+                queued_bytes: writer.queued_bytes,
+                busy: writer.busy,
+            }
         }),
         indexes,
     }

@@ -16,6 +16,9 @@ Its default mode is scoped, on purpose:
 - `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments`
 - `tools/check.ps1 -Mode fix` - apply `cargo fmt`
 
+Performance work: `/stats` then `tools/profile.ps1` (a live binary, no admin);
+`docs/PROFILING.md` has the runbook and the release-symbol gotcha.
+
 `-Mode all` runs the whole suite and **refuses unless `FFF_FULL_CHECK=1` is
 set**. That is deliberate: the full suite links 46 integration binaries, which
 is minutes of work to re-prove changes a single crate cannot reach. CI sets the
