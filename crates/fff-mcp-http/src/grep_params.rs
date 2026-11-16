@@ -18,7 +18,7 @@ const MAX_CONTEXT_LINES: usize = 100;
 pub(crate) struct GrepParams {
     /// Content pattern. Use mode="regex" for alternatives such as deadline|timeout.
     #[serde(alias = "pattern", alias = "querystr")]
-    #[serde(deserialize_with = "deserialize_string")]
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub query: String,
     /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
@@ -771,6 +771,13 @@ mod tests {
         assert_eq!(normalize_context(Some(f64::INFINITY)), None);
         assert_eq!(normalize_context(Some(2.4)), Some(2));
         assert_eq!(normalize_context(Some(1e9)), Some(MAX_CONTEXT_LINES));
+    }
+
+    // Missing and empty are the same request: a client may simply not send the key.
+    #[test]
+    fn an_omitted_query_is_empty() {
+        let params: GrepParams = serde_json::from_str(r#"{"tardir":"C:/x"}"#).unwrap();
+        assert_eq!(params.query, "");
     }
 
     #[test]

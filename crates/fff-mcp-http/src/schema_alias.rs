@@ -11,7 +11,8 @@ pub(crate) fn find_files_params_schema(schema: &mut Schema) {
     advertise_alias_keys(schema, "querystr", &["query", "pattern"]);
 }
 
-// The serde aliases are the contract; advertise them, and require any one of them.
+// The serde aliases are the contract; advertise every key. None of them is
+// required, so an omitted identifier means an empty one.
 fn advertise_alias_keys(schema: &mut Schema, primary: &str, aliases: &[&str]) {
     let Some(object) = schema.as_object_mut() else {
         return;
@@ -32,13 +33,4 @@ fn advertise_alias_keys(schema: &mut Schema, primary: &str, aliases: &[&str]) {
     if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
         required.retain(|key| key.as_str() != Some(primary));
     }
-    object.insert(
-        "anyOf".to_string(),
-        Value::Array(
-            std::iter::once(primary)
-                .chain(aliases.iter().copied())
-                .map(|key| json!({ "required": [key] }))
-                .collect(),
-        ),
-    );
 }

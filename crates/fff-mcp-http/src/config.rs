@@ -34,6 +34,8 @@ pub struct Config {
     pub evict_interval: Duration,
     pub watch: bool,
     pub follow_symlinks: bool,
+    /// Expand files inside symlinked directories after the walk; `--no-symlink-expand` off.
+    pub expand_symlink_dirs: bool,
     /// Build the bigram content index after the initial scan; grep's prefilter.
     pub content_indexing: bool,
     pub frecency_db: Option<PathBuf>,
@@ -69,6 +71,7 @@ impl Default for Config {
             evict_interval: Duration::from_secs(DEFAULT_EVICT_INTERVAL_SECS),
             watch: true,
             follow_symlinks: false,
+            expand_symlink_dirs: true,
             content_indexing: true,
             frecency_db: None,
             log_file: None,

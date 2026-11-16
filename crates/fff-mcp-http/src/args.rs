@@ -91,6 +91,12 @@ pub struct Args {
 
     #[arg(
         long,
+        help = "Do not expand files inside symlinked directories (default: on, capped at 50k files)"
+    )]
+    pub no_symlink_expand: bool,
+
+    #[arg(
+        long,
         help = "Build the bigram content index after each scan, grep's prefilter (default: on)"
     )]
     pub content_indexing: bool,
@@ -214,6 +220,9 @@ impl Args {
         }
         if self.follow_symlinks {
             config.follow_symlinks = true;
+        }
+        if self.no_symlink_expand {
+            config.expand_symlink_dirs = false;
         }
         if self.content_indexing {
             config.content_indexing = true;

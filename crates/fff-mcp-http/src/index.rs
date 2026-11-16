@@ -51,6 +51,7 @@ impl Index {
                 mode: FFFMode::Ai,
                 watch: config.watch,
                 follow_symlinks: config.follow_symlinks,
+                expand_symlink_dirs: config.expand_symlink_dirs,
                 enable_mmap_cache: false,
                 enable_content_indexing: config.content_indexing,
                 snapshot_store: snapshot,

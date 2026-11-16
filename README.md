@@ -117,6 +117,8 @@ On Codex versions that support `omit_tools_from`, add `omit_tools_from = ["defer
 
 Once the server is connected, ask the agent to "use fff". The MCP tools are `grep`, `find_files`, and `multi_grep`.
 
+The identifier key is optional everywhere: `query`, `pattern` and `querystr` are spellings of the same field, and leaving all three out is an empty query, so `find_files` lists everything in scope.
+
 ### Recommended agent prompt
 
 Drop this into your project's `CLAUDE.md` or equivalent:

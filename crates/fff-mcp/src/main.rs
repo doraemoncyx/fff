@@ -292,6 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .max_cached_files
                 .map(fff::ContentCacheBudget::with_max_files),
             follow_symlinks: args.follow_symlinks,
+            expand_symlink_dirs: true,
             enable_home_dir_scanning: args.enable_home_scan,
             enable_fs_root_scanning: args.enable_root_scan,
             git_recency: Default::default(),

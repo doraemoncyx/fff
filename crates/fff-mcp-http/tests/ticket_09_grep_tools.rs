@@ -432,13 +432,6 @@ fn an_invalid_tardir_is_a_parameter_error() {
         assert_eq!(response["error"]["code"], -32602, "{response}");
     }
 
-    let missing_query = server.mcp_tool(
-        30,
-        "grep",
-        json!({ "tardir": dir.path().to_string_lossy() }),
-    );
-    assert_eq!(missing_query["error"]["code"], -32602, "{missing_query}");
-
     let outside = server.mcp_tool(
         31,
         "grep",

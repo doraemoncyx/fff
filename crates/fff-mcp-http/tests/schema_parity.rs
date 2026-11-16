@@ -57,12 +57,7 @@ fn tools_list_advertises_every_identifier_key() {
             );
         }
         assert_eq!(required_keys(&schema), vec!["tardir"], "{name}: {schema}");
-
-        let mut advertised = branches_of(&schema);
-        advertised.sort_unstable();
-        let mut expected = keys.to_vec();
-        expected.sort_unstable();
-        assert_eq!(advertised, expected, "{name}: {schema}");
+        assert!(schema.get("anyOf").is_none(), "{name}: {schema}");
     }
 }
 
@@ -134,24 +129,31 @@ fn get_routes_still_accept_the_alias_keys() {
     assert!(grep.body.contains("src/main.rs"), "{}", grep.body);
 }
 
+// Clients send only the keys they have; an omitted identifier means an empty one.
 #[test]
-fn a_call_without_any_identifier_key_fails_readably() {
+fn a_call_without_any_identifier_key_lists_everything() {
     let dir = tree();
     let server = TestServer::start(test_config());
     initialize(&server);
     let tardir = dir.path().to_string_lossy().to_string();
 
-    for name in ["grep", "find_files"] {
-        let response = server.mcp_tool(2, name, json!({ "tardir": tardir }));
-        assert!(response["result"].is_null(), "{name}: {response}");
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("query"),
-            "{name}: {response}"
-        );
-    }
+    let response = server.mcp_tool(2, "find_files", json!({ "tardir": tardir }));
+    assert!(response["error"].is_null(), "{response}");
+    let rels: Vec<&str> = response["result"]["structuredContent"]["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no results in {response}"))
+        .iter()
+        .filter_map(|hit| hit["rel"].as_str())
+        .collect();
+    assert!(
+        rels.contains(&"src/main.rs") && rels.contains(&"docs/readme.md"),
+        "{rels:?}"
+    );
+
+    let omitted = server.mcp_tool(3, "grep", json!({ "tardir": tardir, "context": 0 }));
+    let empty = server.mcp_tool(4, "grep", json!({ "tardir": tardir, "context": 0, "query": "" }));
+    assert!(omitted["error"].is_null(), "{omitted}");
+    assert_eq!(omitted["result"], empty["result"]);
 }
 
 fn tool_schema(listing: &Value, name: &str) -> Value {
@@ -170,14 +172,5 @@ fn required_keys(schema: &Value) -> Vec<&str> {
         .into_iter()
         .flatten()
         .filter_map(|key| key.as_str())
-        .collect()
-}
-
-fn branches_of(schema: &Value) -> Vec<&str> {
-    schema["anyOf"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|branch| branch["required"][0].as_str())
         .collect()
 }

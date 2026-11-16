@@ -42,6 +42,7 @@ pub(crate) struct ScanConfig {
     pub(crate) auto_cache_budget: bool,
     pub(crate) install_watcher: bool,
     pub(crate) follow_symlinks: bool,
+    pub(crate) expand_symlink_dirs: bool,
     pub(crate) ignore_options: FilePickerIgnoreOptions,
     pub(crate) enable_fs_root_scanning: bool,
     pub(crate) enable_home_dir_scanning: bool,
@@ -98,6 +99,7 @@ impl ScanJob {
             auto_cache_budget: !picker.has_explicit_cache_budget(),
             install_watcher: false, // the watcher is independent of rescan, it is not restarting EVER
             follow_symlinks: picker.follows_symlinks(),
+            expand_symlink_dirs: picker.expands_symlink_dirs(),
             ignore_options: picker.ignore_options().clone(),
             enable_fs_root_scanning: picker.fs_root_scanning_enabled(),
             enable_home_dir_scanning: picker.home_dir_scanning_enabled(),
@@ -182,6 +184,7 @@ impl ScanJob {
             &shared_frecency,
             mode,
             config.follow_symlinks,
+            config.expand_symlink_dirs,
             &config.ignore_options,
         ) {
             Ok(sync) => sync,
@@ -709,6 +712,7 @@ mod tests {
             auto_cache_budget: false,
             install_watcher: false,
             follow_symlinks: false,
+            expand_symlink_dirs: true,
             ignore_options: Default::default(),
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,

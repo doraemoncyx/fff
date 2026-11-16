@@ -2,7 +2,9 @@
 """Build fff-mcp-http; extra args are passed to cargo.
 
 FFF_FEATURES selects the walker feature set (default zlob); --debug builds the
-dev profile instead of release. zig and libclang are set up by build.py.
+dev profile instead of release. The release build keeps debuginfo and symbols
+so sampled stacks from a running binary resolve to real frames. zig and
+libclang are set up by build.py.
 """
 
 from __future__ import annotations
@@ -36,6 +38,11 @@ def main() -> int:
     if "--debug" in args:
         args.remove("--debug")
         profile = ["--profile", "dev"]
+    else:
+        # release with debuginfo: keep opt-level 3 / lto from [profile.release],
+        # only override strip and debug level. Respect values already set.
+        os.environ.setdefault("CARGO_PROFILE_RELEASE_DEBUG", "2")
+        os.environ.setdefault("CARGO_PROFILE_RELEASE_STRIP", "none")
 
     command = [
         "cargo",

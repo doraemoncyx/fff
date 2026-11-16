@@ -652,6 +652,9 @@ pub struct FilePickerOptions {
     pub watch: bool,
     /// Follow symbolic links during file indexing
     pub follow_symlinks: bool,
+    /// Expand files inside symlinked directories into the index. Off keeps the
+    /// link itself but never walks its target.
+    pub expand_symlink_dirs: bool,
     /// Allow indexing the filesystem root (`/`)
     pub enable_fs_root_scanning: bool,
     /// Allow indexing the user's home directory. Off by default for the same
@@ -675,6 +678,7 @@ impl Default for FilePickerOptions {
             cache_budget: None,
             watch: true,
             follow_symlinks: false,
+            expand_symlink_dirs: true,
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,
             git_recency: GitRecencyConfig::default(),
@@ -711,6 +715,7 @@ pub struct FilePicker {
     enable_content_indexing: bool,
     watch: bool,
     follow_symlinks: bool,
+    expand_symlink_dirs: bool,
     ignore_options: FilePickerIgnoreOptions,
     enable_fs_root_scanning: bool,
     enable_home_dir_scanning: bool,
@@ -789,6 +794,10 @@ impl FilePicker {
 
     pub fn follows_symlinks(&self) -> bool {
         self.follow_symlinks
+    }
+
+    pub fn expands_symlink_dirs(&self) -> bool {
+        self.expand_symlink_dirs
     }
 
     /// Returns the ignore options for this picker.
@@ -1073,6 +1082,7 @@ impl FilePicker {
             enable_content_indexing: options.enable_content_indexing,
             watch: options.watch,
             follow_symlinks: options.follow_symlinks,
+            expand_symlink_dirs: options.expand_symlink_dirs,
             ignore_options,
             enable_fs_root_scanning: options.enable_fs_root_scanning,
             enable_home_dir_scanning: options.enable_home_dir_scanning,
@@ -1141,6 +1151,7 @@ impl FilePicker {
         let watch = picker.watch;
         let mode = picker.mode;
         let follow_symlinks = picker.follow_symlinks;
+        let expand_symlink_dirs = picker.expand_symlink_dirs;
         let enable_fs_root_scanning = picker.enable_fs_root_scanning;
         let enable_home_dir_scanning = picker.enable_home_dir_scanning;
         let snapshot_store = picker.snapshot_store();
@@ -1184,6 +1195,7 @@ impl FilePicker {
                 auto_cache_budget: true,
                 install_watcher: true,
                 follow_symlinks,
+                expand_symlink_dirs,
                 ignore_options,
                 enable_fs_root_scanning,
                 enable_home_dir_scanning,
@@ -1220,6 +1232,7 @@ impl FilePicker {
             &empty_frecency,
             self.mode,
             self.follow_symlinks,
+            self.expand_symlink_dirs,
             &self.ignore_options,
         )?;
 
@@ -2307,6 +2320,7 @@ impl FileSync {
     /// git status computation. This avoids blocking on `git status` which can
     /// take 10+ seconds on very large repos (e.g. chromium).
     #[tracing::instrument(skip_all, name = "walk_filesystem", level = Level::INFO)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_filesystem(
         base_path: &Path,
         git: Option<GitDiscovery>,
@@ -2314,6 +2328,7 @@ impl FileSync {
         shared_frecency: &SharedFrecency,
         mode: FFFMode,
         follow_symlinks: bool,
+        expand_symlink_dirs: bool,
         ignore_options: &FilePickerIgnoreOptions,
     ) -> Result<FileSync, Error> {
         let scan_start = std::time::Instant::now();
@@ -2345,13 +2360,14 @@ impl FileSync {
         )?;
         let ignore_rules = ignore_rules.map(Arc::new);
 
-        // Symlinked dirs are searchable unconditionally, even when the walker
-        // didn't descend into them (follow_symlinks=false, or the zlob backend
-        // on Windows where following is unimplemented). Expand their targets so
-        // files inside appear in the index. Already-descended symlink dirs are
-        // detected by existing pairs under the symlink prefix and skipped.
-        let expanded =
-            expand_symlink_dir_pairs(base_path, &mut pairs, is_git_repo, ignore_rules.as_deref());
+        // Symlinked dirs stay searchable even when the walker didn't descend into
+        // them (follow_symlinks=false, or the zlob backend on Windows where
+        // following is unimplemented). Targets already descended are skipped.
+        let expanded = if expand_symlink_dirs {
+            expand_symlink_dir_pairs(base_path, &mut pairs, is_git_repo, ignore_rules.as_deref())
+        } else {
+            0
+        };
         synced_files_count.fetch_add(expanded, Ordering::Relaxed);
 
         // Sort by (dir_part, filename). This groups files by their directory
@@ -2483,6 +2499,11 @@ impl FileSync {
     }
 }
 
+// Safety valves for symlink expansion: a link into a tree far larger than the
+// Root must not stall the scan for minutes or inflate the index without bound.
+const MAX_EXPANDED_FILES: usize = 50_000;
+const MAX_EXPAND_DEPTH: usize = 32;
+
 /// Make files inside symlinked directories searchable regardless of the walker
 /// backend / `follow_symlinks` setting.
 ///
@@ -2493,6 +2514,9 @@ impl FileSync {
 /// becomes searchable exactly like `real/main.py`.
 ///
 /// Returns the number of files added.
+///
+/// Bounded by [`MAX_EXPANDED_FILES`] and [`MAX_EXPAND_DEPTH`]: a link into a
+/// resource tree would otherwise walk hundreds of thousands of entries.
 fn expand_symlink_dir_pairs(
     base_path: &Path,
     pairs: &mut Vec<(FileItem, String, u64)>,
@@ -2511,8 +2535,12 @@ fn expand_symlink_dir_pairs(
     // symlink roots so `a -> b -> a` loops terminate).
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut added = 0usize;
+    let mut budget = MAX_EXPANDED_FILES;
 
     for prefix in markers {
+        if budget == 0 {
+            break;
+        }
         // If the walker already descended (follow_symlinks=true on a backend
         // that supports it), files under "prefix/" exist — skip.
         let already_descended = pairs
@@ -2537,9 +2565,18 @@ fn expand_symlink_dir_pairs(
             is_git_repo,
             ignore_rules,
             &mut visited,
+            0,
+            &mut budget,
             pairs,
         );
         added += pairs.len() - before;
+    }
+
+    if budget == 0 {
+        warn!(
+            added,
+            "symlink expansion hit its file budget, the rest of the targets stays out of the index"
+        );
     }
 
     added
@@ -2554,13 +2591,23 @@ fn expand_symlink_dir_into(
     is_git_repo: bool,
     ignore_rules: Option<&crate::walk::WalkIgnoreRules>,
     visited: &mut std::collections::HashSet<PathBuf>,
+    depth: usize,
+    budget: &mut usize,
     pairs: &mut Vec<(FileItem, String, u64)>,
 ) {
+    if depth >= MAX_EXPAND_DEPTH {
+        debug!(dir = %dir.display(), "symlink expansion depth cap reached");
+        return;
+    }
+
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
     for entry in entries.flatten() {
+        if *budget == 0 {
+            return;
+        }
         let path = entry.path();
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -2600,7 +2647,16 @@ fn expand_symlink_dir_into(
             if !visited.insert(canon) {
                 continue;
             }
-            expand_symlink_dir_into(&path, &rel, is_git_repo, ignore_rules, visited, pairs);
+            expand_symlink_dir_into(
+                &path,
+                &rel,
+                is_git_repo,
+                ignore_rules,
+                visited,
+                depth + 1,
+                budget,
+                pairs,
+            );
         } else if meta.is_file() {
             let time = meta.modified().ok();
             let modified = time
@@ -2610,6 +2666,7 @@ fn expand_symlink_dir_into(
             let filename_offset = rel.rfind('/').map(|i| i + 1).unwrap_or(0) as u16;
             let item = FileItem::new_raw(filename_offset, meta.len(), modified, None, is_binary);
             pairs.push((item, rel, crate::walk::mtime_ns(time)));
+            *budget -= 1;
         }
     }
 }

@@ -22,9 +22,9 @@ pub enum Mode {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[schemars(transform = crate::schema_alias::find_files_params_schema)]
 pub struct Params {
-    /// Fuzzy filename or path query. Empty lists everything in scope; `query` and `pattern` are aliases.
+    /// Fuzzy filename or path query. Omit it, or pass an empty string, to list everything in scope; `query` and `pattern` are aliases.
     #[serde(alias = "query", alias = "pattern")]
-    #[serde(deserialize_with = "deserialize_string")]
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub querystr: String,
     /// Absolute directory or file to search. Indexed on demand and kept in an LRU registry.
     pub tardir: String,
@@ -441,6 +441,13 @@ mod tests {
         let from_null: Params =
             serde_json::from_str(r#"{"querystr":null,"tardir":"C:/x"}"#).unwrap();
         assert_eq!(from_null.querystr, "");
+    }
+
+    // Missing and empty are the same request: a client may simply not send the key.
+    #[test]
+    fn an_omitted_querystr_is_empty() {
+        let params: Params = serde_json::from_str(r#"{"tardir":"C:/x"}"#).unwrap();
+        assert_eq!(params.querystr, "");
     }
 
     #[test]

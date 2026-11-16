@@ -45,7 +45,7 @@ fn tools_list_advertises_every_identifier_key() {
             Vec::<&str>::new(),
             "{name}: {schema}"
         );
-        assert_eq!(branches_of(&schema), IDENTIFIER_KEYS, "{name}: {schema}");
+        assert!(schema.get("anyOf").is_none(), "{name}: {schema}");
     }
 }
 
@@ -70,22 +70,26 @@ fn every_advertised_key_is_accepted_by_tools_call() {
     }
 }
 
+// Clients send only the keys they have; an omitted identifier means an empty one.
 #[test]
-fn a_call_without_any_identifier_key_fails_readably() {
+fn a_call_without_any_identifier_key_lists_everything() {
     let dir = tree();
     let mut session = Session::start(dir.path(), &[]);
 
-    for name in ["grep", "find_files"] {
-        let response = session.tool(name, json!({}));
-        assert!(response["result"].is_null(), "{name}: {response}");
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("query"),
-            "{name}: {response}"
-        );
-    }
+    let response = session.tool("find_files", json!({}));
+    let text = tool_text(&response, "find_files");
+    assert!(
+        text.contains("src/main.rs") && text.contains("docs/readme.md"),
+        "{text}"
+    );
+
+    let omitted = session.tool("grep", json!({}));
+    let empty = session.tool("grep", json!({ "query": "" }));
+    assert_eq!(
+        tool_text(&omitted, "omitted"),
+        tool_text(&empty, "empty"),
+        "{omitted}"
+    );
 }
 
 fn tool_schema(listing: &Value, name: &str) -> Value {
@@ -112,14 +116,5 @@ fn required_keys(schema: &Value) -> Vec<&str> {
         .into_iter()
         .flatten()
         .filter_map(|key| key.as_str())
-        .collect()
-}
-
-fn branches_of(schema: &Value) -> Vec<&str> {
-    schema["anyOf"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|branch| branch["required"][0].as_str())
         .collect()
 }

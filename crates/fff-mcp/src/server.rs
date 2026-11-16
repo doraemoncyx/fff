@@ -98,7 +98,7 @@ pub struct FindFilesParams {
     /// Fuzzy filename or path query. Put known module constraints in path.
     // `pattern` and `querystr` mirror the HTTP server's keys (#311); arrays coalesce.
     #[serde(alias = "pattern", alias = "querystr")]
-    #[serde(deserialize_with = "deserialize_string")]
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub query: String,
     /// Directory, filename, or one glob to search. Set this from the request's module context.
     /// Examples: "src/net", "client.py", "**/*billing*client*/**".
@@ -125,7 +125,7 @@ pub struct GrepParams {
     /// Content pattern. Use mode="regex" for alternatives such as deadline|timeout.
     // `pattern` (multi_grep habit) and `querystr` (HTTP spelling) are aliases (#311).
     #[serde(alias = "pattern", alias = "querystr")]
-    #[serde(deserialize_with = "deserialize_string")]
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub query: String,
     /// Complete directory name, filename, or glob. Use **/*transport*/** for a partial module name.
     pub path: Option<String>,
@@ -2873,16 +2873,25 @@ mod tests {
             assert!(value["properties"].get("path").is_some());
             let required = required_keys(&value);
             assert!(!required.iter().any(|key| *key == "path"), "{value}");
-            assert!(!required.iter().any(|key| *key == "query"), "{value}");
             for key in IDENTIFIER_KEYS {
+                assert!(!required.iter().any(|other| *other == key), "{value}");
                 assert_eq!(value["properties"][key]["type"], "string", "{value}");
                 assert!(
                     value["properties"][key]["description"].is_string(),
                     "{value}"
                 );
             }
-            assert_eq!(identifier_branches(&value), IDENTIFIER_KEYS, "{value}");
+            assert!(value.get("anyOf").is_none(), "{value}");
         }
+    }
+
+    // Missing and empty are the same request: a client may simply not send the key.
+    #[test]
+    fn an_omitted_identifier_key_is_an_empty_query() {
+        let grep: GrepParams = serde_json::from_value(serde_json::json!({"path": "src"})).unwrap();
+        assert_eq!(grep.query, "");
+        let find: FindFilesParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(find.query, "");
     }
 
     #[test]
@@ -3812,15 +3821,6 @@ mod tests {
             .into_iter()
             .flatten()
             .filter_map(|key| key.as_str())
-            .collect()
-    }
-
-    fn identifier_branches(schema: &serde_json::Value) -> Vec<&str> {
-        schema["anyOf"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|branch| branch["required"][0].as_str())
             .collect()
     }
 }
