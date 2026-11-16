@@ -1288,7 +1288,9 @@ mod tests {
 
     #[test]
     fn fuzzy_parallel_and_sequential_scores_match() {
-        let paths: Vec<_> = (0..36_000)
+        // Clears both thresholds this comparison exists to exercise: 2000-file
+        // chunking and PARALLEL_SCORING_MIN_MATCHES. 36k only cost seconds.
+        let paths: Vec<_> = (0..12_000)
             .map(|index| {
                 format!(
                     "src/components/group_{}/controller_é_{index}.tsx",

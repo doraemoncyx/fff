@@ -151,7 +151,11 @@ fn a_call_without_any_identifier_key_lists_everything() {
     );
 
     let omitted = server.mcp_tool(3, "grep", json!({ "tardir": tardir, "context": 0 }));
-    let empty = server.mcp_tool(4, "grep", json!({ "tardir": tardir, "context": 0, "query": "" }));
+    let empty = server.mcp_tool(
+        4,
+        "grep",
+        json!({ "tardir": tardir, "context": 0, "query": "" }),
+    );
     assert!(omitted["error"].is_null(), "{omitted}");
     assert_eq!(omitted["result"], empty["result"]);
 }

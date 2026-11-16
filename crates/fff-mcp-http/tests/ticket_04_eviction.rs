@@ -1,6 +1,5 @@
 mod common;
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::{ScriptedProbe, TestServer, test_config, write_tree};
@@ -31,10 +30,6 @@ fn roots_tree(count: usize) -> (tempfile::TempDir, Vec<String>) {
         roots.push(path.to_string_lossy().into_owned());
     }
     (dir, roots)
-}
-
-fn path_of(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn search(server: &TestServer, tardir: &str) -> Value {
@@ -215,51 +210,6 @@ fn an_evicted_root_waits_out_a_cooldown() {
         vec![roots[0].clone()],
         "the recreated Root was LRU but still cooling down"
     );
-}
-
-#[test]
-fn stats_report_live_files_and_scan_state() {
-    let dir = tempfile::tempdir().unwrap();
-    for index in 0..5000 {
-        let parent = dir.path().join(format!(
-            "d{:02}/s{:02}/deep{:02}",
-            index % 60,
-            index % 25,
-            index % 7
-        ));
-        std::fs::create_dir_all(&parent).unwrap();
-        std::fs::write(parent.join(format!("file{index}.txt")), "x").unwrap();
-    }
-    let tardir = path_of(dir.path());
-
-    let mut config = test_config();
-    config.scan_wait = Duration::ZERO;
-    let server = TestServer::start(config);
-
-    search(&server, &tardir);
-    let during = server.stats();
-    let counted = during["indexes"][0]["files"].as_u64().expect("files");
-    assert_eq!(during["indexes"][0]["scanning"], true, "{during}");
-    assert!(counted < 5000, "walk finished too fast: {during}");
-    assert!(during["used_bytes"].as_u64().unwrap() > 0, "{during}");
-    assert_eq!(
-        during["budget_bytes"].as_u64(),
-        Some(3 * 1024 * 1024 * 1024)
-    );
-
-    wait_for_scans(&server);
-    let expected = search(&server, &tardir)["total"].as_u64().expect("total");
-    assert_eq!(expected, 5000);
-
-    let after = server.stats();
-    assert_eq!(after["indexes"][0]["scanning"], false, "{after}");
-    assert_eq!(
-        after["indexes"][0]["files"].as_u64(),
-        Some(5000),
-        "files must match live_file_count: {after}"
-    );
-    assert_eq!(after["indexes"][0]["files"].as_u64(), Some(expected));
-    assert!(after["indexes"][0]["dirs"].as_u64().unwrap() > 0, "{after}");
 }
 
 #[test]

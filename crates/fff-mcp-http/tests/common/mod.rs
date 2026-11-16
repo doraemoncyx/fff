@@ -220,6 +220,29 @@ pub fn write_tree(root: &Path, files: &[&str]) {
     }
 }
 
+/// Bulk filler: serial creation of a few thousand paths dominates these tests'
+/// clock, so the writes are spread over the pool.
+pub fn write_many(root: &Path, count: usize, path_of: impl Fn(usize) -> String + Sync) {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8);
+    let path_of = &path_of;
+    std::thread::scope(|scope| {
+        for thread in 0..threads {
+            scope.spawn(move || {
+                for index in (thread..count).step_by(threads) {
+                    let path = root.join(path_of(index));
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).unwrap();
+                    }
+                    std::fs::write(path, "x").unwrap();
+                }
+            });
+        }
+    });
+}
+
 /// Make the tree a git repo: hidden files are only walked inside one.
 pub fn make_git_repo(root: &Path) {
     git2::Repository::init(root).expect("init git repo");

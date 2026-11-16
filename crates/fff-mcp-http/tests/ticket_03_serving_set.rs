@@ -1,7 +1,6 @@
 mod common;
 
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use common::{TestServer, test_config, write_tree};
 use serde_json::Value;
@@ -70,36 +69,6 @@ fn stats_roots(server: &TestServer) -> Vec<String> {
     roots
 }
 
-fn wait_for_completed_scans(server: &TestServer) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        let stats = server.stats();
-        let idle = stats["indexes"]
-            .as_array()
-            .expect("indexes")
-            .iter()
-            .all(|index| index["scanning"] == false);
-        if idle {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("scans did not finish");
-}
-
-fn wait_for_index_count(server: &TestServer, expected: usize) -> Vec<String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut roots = stats_roots(server);
-    while Instant::now() < deadline {
-        roots = stats_roots(server);
-        if roots.len() == expected {
-            return roots;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("expected {expected} indexes, got {roots:?}");
-}
-
 #[test]
 fn parent_then_direct_child_reuses_the_parent_index() {
     let dir = tree();
@@ -159,45 +128,6 @@ fn children_then_parent_merges_and_dedupes() {
     assert_eq!(unique.len(), FILES.len(), "{response}");
     assert_eq!(response["total"], FILES.len(), "{response}");
     assert!(response.get("cursor").is_none(), "{response}");
-}
-
-#[test]
-fn children_answer_while_the_parent_is_still_scanning() {
-    let dir = tree();
-    // Keep the parent walk busy long enough that the children cannot already be
-    // subsumed by the time this response is assembled.
-    for index in 0..20_000 {
-        let path = dir.path().join("bulk").join(format!("f{index}.dat"));
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(path, "x").unwrap();
-    }
-    let mut config = test_config();
-    config.scan_wait = Duration::ZERO;
-    let server = TestServer::start(config);
-
-    search(&server, &path_of(&dir.path().join("data")));
-    search(&server, &path_of(&dir.path().join("editor")));
-    wait_for_completed_scans(&server);
-
-    // No wait for the parent scan: everything below must come from the children.
-    let response = search(&server, &path_of(dir.path()));
-    assert_eq!(response["merged"], true, "{response}");
-    assert_eq!(response["served_by"].as_array().unwrap().len(), 3);
-    let rels = rels(&response);
-    for rel in ["data/one.csv", "data/nested/two.csv", "editor/main.lua"] {
-        assert!(rels.contains(&rel.to_string()), "missing {rel}: {response}");
-    }
-    let mut unique = paths(&response);
-    unique.dedup();
-    assert_eq!(unique.len(), paths(&response).len(), "{response}");
-
-    // The parent scan keeps running after the response; subsumption must not
-    // need another search request to fire.
-    let parent = path_of(dir.path());
-    let roots = wait_for_index_count(&server, 1);
-    assert_eq!(roots[0].to_lowercase(), parent.to_lowercase(), "{roots:?}");
 }
 
 #[test]

@@ -4,6 +4,12 @@ rustflags = [
   "-C", "link-arg=dynamic_lookup",
 ]
 
+# This workspace links 49 test binaries, and MSVC link.exe spends 60s on the
+# fff-core set alone after one core edit; rust-lld ships with the toolchain and
+# does it in 26s.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
 [target.x86_64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=-crt-static"]
 

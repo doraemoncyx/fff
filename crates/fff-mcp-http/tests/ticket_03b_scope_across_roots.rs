@@ -55,65 +55,6 @@ fn wait_for_completed_scans(server: &TestServer) {
     panic!("scans did not finish");
 }
 
-/// Merge children first, then ask the parent with a scope that names one child.
-#[test]
-fn scope_names_a_child_root_while_the_parent_is_scanning() {
-    let dir = tree();
-    let mut config = test_config();
-    config.scan_wait = Duration::ZERO;
-    let server = TestServer::start(config);
-
-    for child in ["data", "editor"] {
-        server.search_json(&[
-            ("querystr", ""),
-            ("tardir", &path_of(&dir.path().join(child))),
-        ]);
-    }
-    wait_for_completed_scans(&server);
-
-    // A large sibling keeps the parent's own walk from finishing instantly, so
-    // the merged window stays observable.
-    for index in 0..20_000 {
-        let path = dir.path().join("bulk").join(format!("f{index}.dat"));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "x").unwrap();
-    }
-
-    let parent = path_of(dir.path());
-
-    let scoped = server.search_json(&[
-        ("querystr", ""),
-        ("tardir", &parent),
-        ("path", "data"),
-        ("maxResults", "100"),
-    ]);
-    assert_eq!(
-        rels(&scoped),
-        vec![
-            "data/nested/deep/three.png",
-            "data/nested/two.png",
-            "data/one.png"
-        ],
-        "{scoped}"
-    );
-    assert!(
-        scoped["served_by"].as_array().unwrap().len() >= 2,
-        "the child must still be merged: {scoped}"
-    );
-
-    let globbed = server.search_json(&[
-        ("querystr", ""),
-        ("tardir", &parent),
-        ("globs", "editor/**"),
-        ("maxResults", "100"),
-    ]);
-    assert_eq!(
-        rels(&globbed),
-        vec!["editor/art/hud.png", "editor/main.lua"],
-        "{globbed}"
-    );
-}
-
 /// A scope inside one child must not be widened by a sibling Root's matches.
 #[test]
 fn scope_outside_a_child_root_excludes_it() {

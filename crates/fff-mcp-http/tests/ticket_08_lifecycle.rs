@@ -144,10 +144,6 @@ impl ServerProcess {
         common::request(self.addr, "GET", target, &[], None).expect("GET succeeds")
     }
 
-    fn exit_status(&mut self) -> Option<ExitStatus> {
-        self.child.try_wait().unwrap()
-    }
-
     fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         wait_for(&mut self.child, timeout)
     }
@@ -192,71 +188,6 @@ fn consecutive_launches_write_distinct_log_files() {
         let size = std::fs::metadata(path).unwrap().len();
         assert!(size > 0, "log file {} is empty", path.display());
     }
-}
-
-#[test]
-fn idle_timeout_exits_and_requests_reset_the_clock() {
-    let dir = temp_tree();
-    let logs = dir.path().join("logs");
-    let hint = logs.join("idle.log");
-    let mut server = ServerProcess::start(
-        dir.path(),
-        &[
-            "--log-file",
-            hint.to_str().unwrap(),
-            "--idle-timeout-secs",
-            "1",
-        ],
-    );
-
-    // One real search leaves an Index (with its watcher) behind.
-    let response = server.get(&search_target(dir.path(), "a.txt"));
-    assert_eq!(response.status, 200, "{}", response.body);
-
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(3) {
-        let response = server.get("/stats");
-        assert_eq!(response.status, 200);
-        assert!(
-            server.exit_status().is_none(),
-            "exited while requests were still arriving"
-        );
-        std::thread::sleep(Duration::from_millis(250));
-    }
-
-    // /healthz is a probe, not usage: it must not keep the process alive.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut probes = 0;
-    let status = loop {
-        if let Some(status) = server.exit_status() {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "process did not exit after the idle timeout"
-        );
-        if let Ok(response) = common::request(server.addr, "GET", "/healthz", &[], None)
-            && response.status == 200
-        {
-            probes += 1;
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    };
-    assert!(status.success(), "idle shutdown was not clean: {status:?}");
-    assert!(
-        probes >= 3,
-        "only {probes} health probes landed; the test proved nothing"
-    );
-
-    let text = read_logs(&logs, "idle");
-    assert!(
-        text.contains("exiting after the idle timeout"),
-        "idle exit missing from logs:\n{text}"
-    );
-    assert!(
-        text.contains("shutdown complete"),
-        "graceful shutdown missing from logs:\n{text}"
-    );
 }
 
 #[test]

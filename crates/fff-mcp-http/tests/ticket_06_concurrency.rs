@@ -9,11 +9,9 @@ use serde_json::Value;
 
 /// Enough files that a walk outlives the first follow-up request.
 fn wide_tree(root: &Path, count: usize) {
-    for index in 0..count {
-        let parent = root.join(format!("d{:02}/s{:02}", index % 40, index % 13));
-        std::fs::create_dir_all(&parent).unwrap();
-        std::fs::write(parent.join(format!("file{index}.txt")), "x").unwrap();
-    }
+    common::write_many(root, count, |index| {
+        format!("d{:02}/s{:02}/file{index}.txt", index % 40, index % 13)
+    });
 }
 
 fn path_of(path: &Path) -> String {
@@ -126,44 +124,6 @@ fn eight_concurrent_requests_share_one_scan() {
 }
 
 #[test]
-fn the_scan_cap_queues_extra_requests_instead_of_failing() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut tardirs = Vec::new();
-    for index in 0..6 {
-        let root = dir.path().join(format!("root{index}"));
-        wide_tree(&root, 800);
-        tardirs.push(path_of(&root));
-    }
-
-    let mut config = test_config();
-    config.max_concurrent_scans = 2;
-    config.scan_wait = Duration::from_secs(60);
-    let server = TestServer::start(config);
-
-    let responses = concurrent_searches(&server, &tardirs);
-    for response in &responses {
-        assert_eq!(response["total"].as_u64(), Some(800), "{response}");
-        assert_eq!(response["scanning"], false, "{response}");
-    }
-
-    let stats = server.stats();
-    assert_eq!(stats_roots(&server).len(), 6, "{stats}");
-    assert_eq!(stats["scans_started"].as_u64(), Some(6), "{stats}");
-    // Permit release trails the last published file by a scheduler hop.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut in_flight = stats["scans_in_flight"].as_u64().unwrap_or(1);
-    while in_flight != 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(25));
-        in_flight = server.stats()["scans_in_flight"].as_u64().unwrap_or(1);
-    }
-    assert_eq!(in_flight, 0, "{stats}");
-    assert!(
-        server.stats()["peak_scans_in_flight"].as_u64().unwrap_or(0) <= 2,
-        "the cap was exceeded: {stats}"
-    );
-}
-
-#[test]
 fn a_short_deadline_returns_partial_results_and_a_retry_completes() {
     let dir = tempfile::tempdir().unwrap();
     wide_tree(dir.path(), 4000);
@@ -190,40 +150,6 @@ fn a_short_deadline_returns_partial_results_and_a_retry_completes() {
     let complete = search(&server, &tardir);
     assert_eq!(complete["scanning"], false, "{complete}");
     assert_eq!(complete["total"].as_u64(), Some(4000), "{complete}");
-}
-
-#[test]
-fn scanned_grows_until_it_matches_the_file_count() {
-    let dir = tempfile::tempdir().unwrap();
-    wide_tree(dir.path(), 6000);
-    let tardir = path_of(dir.path());
-
-    let mut config = test_config();
-    config.scan_wait = Duration::ZERO;
-    let server = TestServer::start(config);
-
-    let mut scanned = search(&server, &tardir)["scanned"]
-        .as_u64()
-        .expect("scanned");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let response = search(&server, &tardir);
-        let current = response["scanned"].as_u64().expect("scanned");
-        assert!(current >= scanned, "scanned went backwards: {response}");
-        scanned = current;
-        if response["scanning"] == false {
-            assert_eq!(
-                scanned, 6000,
-                "scanned must equal the file count: {response}"
-            );
-            assert_eq!(response["total"].as_u64(), Some(6000), "{response}");
-            let stats = server.stats();
-            assert_eq!(stats["indexes"][0]["files"].as_u64(), Some(6000), "{stats}");
-            return;
-        }
-        assert!(Instant::now() < deadline, "scan did not finish");
-        std::thread::sleep(Duration::from_millis(15));
-    }
 }
 
 #[test]

@@ -3,10 +3,13 @@
 # One entry point so a caller never has to reconstruct a working invocation.
 # `zlob` needs zig >= 0.17.1, which is pinned under tools/ and is not the zig
 # on PATH; every mode below exports it before touching cargo.
+#
+# The default mode is `quick`: unit tests only, seconds not minutes. `fast` adds
+# the integration binaries, and is the one to run before a commit.
 
 param(
-    [ValidateSet("all", "fast", "lint", "fmt", "comments", "test", "fix")]
-    [string]$Mode = "fast",
+    [ValidateSet("all", "quick", "fast", "lint", "fmt", "comments", "test", "fix")]
+    [string]$Mode = "quick",
     # Names a single test so a change can be checked without its whole crate.
     [string]$Filter = "",
     [string]$Path = "",
@@ -56,6 +59,9 @@ $windowsOnlyFailures = @(
     "watch::rescan_tests::renaming_a_file_carries_frecency_and_keeps_the_old_entry"
 )
 
+# $IsWindows only exists from PowerShell 6 on, and 5.1 is still the default here.
+$onWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+
 function Invoke-Step {
     param([string]$Name, [string[]]$Command, [string[]]$Arguments)
 
@@ -88,11 +94,11 @@ function Test-OnlyKnownFailures {
 # Neovim / CPython toolchain.
 function Test-Workspace {
     $log = @()
-    & cargo (@("test", "--workspace") + $zlob + @("--exclude", "fff-nvim", "--exclude", "fff-python")) 2>&1 |
+    & cargo (@("test", "--workspace") + $zlob + @("--exclude", "fff-nvim", "--exclude", "fff-python")) |
         Tee-Object -Variable log | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -eq 0) { return }
 
-    if (-not $IsWindows -or -not (Test-OnlyKnownFailures $log)) {
+    if (-not $onWindows -or -not (Test-OnlyKnownFailures $log)) {
         $script:failed += "test"
         Write-Host "FAILED: test" -ForegroundColor Red
     }
@@ -112,13 +118,10 @@ function Get-PackageName {
     return $null
 }
 
-# Crates a change can reach: what is uncommitted, else what the last commit
-# touched. Returned as package names cargo accepts.
+# Crates a change can reach: what is uncommitted. A clean tree has nothing new
+# to prove, so the last commit's crates are not re-run.
 function Get-ChangedCrates {
     $files = @(git status --porcelain | ForEach-Object { $_.Substring(3) })
-    if ($files.Count -eq 0) {
-        $files = @(git diff --name-only HEAD~1 2>$null)
-    }
 
     $dirs = foreach ($file in $files) {
         if ($file -match '^crates/([^/\\]+)/') { "crates/$($Matches[1])" }
@@ -143,10 +146,12 @@ function Resolve-TargetCrate {
     return $null
 }
 
-# Test execution is the expensive, local part, so it is scoped. Clippy stays
-# workspace-wide: it is seconds, and a scoped run would miss a change in
-# fff-core that breaks a dependent crate.
+# Test execution is the expensive, local part, so it is scoped, and every changed
+# crate goes into one cargo call: a call per crate recompiles the shared fff-core
+# rlib each time. -LibOnly skips the integration binaries for the inner loop.
 function Test-Fast {
+    param([switch]$LibOnly)
+
     $crates = if ($Path) {
         @(Resolve-TargetCrate $Path | Where-Object { $_ })
     } else {
@@ -154,14 +159,23 @@ function Test-Fast {
     }
 
     if ($crates.Count -eq 0) {
-        Write-Host "no changed crate; nothing to test"
+        Write-Host "no changed crate; nothing to test (-Path <crate> names one)"
         return
     }
 
-    foreach ($crate in $crates) {
-        $args = @("test", "-p") + $crate + $zlob
-        if ($Filter) { $args += $Filter }
-        Invoke-Step "test $crate" "cargo" $args
+    $arguments = @("test") + @($crates | ForEach-Object { "-p"; $_ }) + $zlob
+    if ($LibOnly) { $arguments += "--lib" }
+    if ($Filter) { $arguments += $Filter }
+
+    $log = @()
+    # stdout only: cargo's progress arrives on stderr, and merging it here turns
+    # each line into a NativeCommandError under the Stop preference.
+    & cargo @arguments | Tee-Object -Variable log | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -eq 0) { return }
+
+    if (-not $onWindows -or -not (Test-OnlyKnownFailures $log)) {
+        $script:failed += "test"
+        Write-Host "FAILED: test ($($crates -join ', '))" -ForegroundColor Red
     }
 }
 
@@ -192,6 +206,13 @@ switch ($Mode) {
         Invoke-Step "clippy" "cargo" (@("clippy", "--workspace") + $zlob + @("--", "-D", "warnings"))
         Test-Comments
         Test-Workspace
+    }
+    # Clippy stays workspace-wide in both scoped modes: it is seconds, and a
+    # scoped run would miss a change in fff-core that breaks a dependent crate.
+    "quick" {
+        Invoke-Step "clippy" "cargo" (@("clippy", "--workspace") + $zlob + @("--", "-D", "warnings"))
+        Test-Comments
+        Test-Fast -LibOnly
     }
     "fast" {
         Invoke-Step "clippy" "cargo" (@("clippy", "--workspace") + $zlob + @("--", "-D", "warnings"))

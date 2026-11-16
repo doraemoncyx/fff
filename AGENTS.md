@@ -9,9 +9,13 @@ needs (the zig on PATH is often too old), so cargo is never invoked by hand.
 
 Its default mode is scoped, on purpose:
 
-- `tools/check.ps1` (or `-Mode fast`) - clippy, comment rules, and the tests of
-  the crates you changed. This is the loop: run it after every edit.
-- `tools/check.ps1 -Mode fast -Filter <test name>` - a single test. Use this
+- `tools/check.ps1` (or `-Mode quick`) - clippy, comment rules, and each changed
+  crate's unit tests (`--lib`). This is the loop: run it after every edit; ~20s
+  for a fff-core edit. A clean tree tests nothing, so after a commit use
+  `-Path <crate>` or `-Mode fast`.
+- `tools/check.ps1 -Mode fast` - the same plus the integration binaries and e2e
+  tests of the changed crates. Run it before committing.
+- `tools/check.ps1 -Mode quick -Filter <test name>` - a single test. Use this
   while iterating on one function; it finishes in well under a second.
 - `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments`
 - `tools/check.ps1 -Mode fix` - apply `cargo fmt`
