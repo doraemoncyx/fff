@@ -1,60 +1,120 @@
 # Profiling a running binary
 
-`/stats` says *what* the process is doing; a debugger says *which thread* is
-burning the CPU. Start with `/stats`, and reach for the debugger only when the
-answer is "something is slow" rather than "the writer is behind".
+Four sources, cheapest first. Each one answers a different question, and skipping
+straight to the debugger is how a 20-second burst gets mistaken for a steady leak.
 
-## 1. Ask the process
+## 1. Ask the process: `/stats`
 
 ```powershell
 curl http://127.0.0.1:8737/stats
 ```
 
-`snapshot.commits` / `rows` / `queued_bytes` / `busy` are the drain thread's own
-counters. `queued_bytes` falling with `commits` rising is healthy; `queued_bytes`
-pinned and `busy: true` means the writer, not a grep, owns the CPU.
-`indexes[].indexing: true` means the bigram build is still running for that Root.
+`snapshot.commits` / `rows` / `dropped` / `queued_bytes` / `busy` are the drain
+thread's own counters: `queued_bytes` falling with `commits` rising is healthy,
+while `queued_bytes` pinned with `busy: true` means the writer owns the CPU.
+`indexes[].indexing: true` means that Root's bigram build is still running.
+`scanning: false` together with `indexing: false` on every Root means no scan is
+the culprit — the cost is coming from requests or from a thread outside the index.
 
-## 2. Sample the hot thread
+## 2. Read the per-run log: what each request cost
+
+Every run writes its own file — `%LOCALAPPDATA%\fff\fff_mcp_http+<ts>+<pid>.log`
+on Windows, `<stem>+<ts>+<pid>.log` under the state dir elsewhere — keeping the
+last 20 (`retain_runs`). `--log-file` / `log_file` moves it; the path is printed
+in the log's first line, so a running process can be matched by its pid:
 
 ```powershell
-pwsh tools/profile.ps1 -Id <pid> -Samples 15 -IntervalMs 1000
+Get-ChildItem "$env:LOCALAPPDATA\fff" -Filter "*+24224.log" | Sort-Object LastWriteTime -Descending
 ```
 
-It ranks threads by CPU delta, attaches `cdb.exe` non-invasively (no admin), and
-prints the top frame per hot thread per round. `-SymPath <dir>` points at the
-directory holding the `.pdb`; it defaults to the exe's own directory.
+Request spans carry `time.busy`. A real window over one 35k-file Root:
 
-The script prints `Thread Name` even with no symbols — often that is the answer,
-since the drain threads are named (`fff-snapshot-writer`, `fff-bg-N`,
-`notify-rs debouncer loop`).
+```
+grep::grep                 235 calls   15.2s total   2.76s max
+fff_search::scan            12 calls    4.9s total   2.18s max
+walk::zlob                  21 calls    0.7s total   0.37s max
+fff_search::log              6 calls 1113.6s total 1078.0s max   ← lifetime span
+```
 
-## 3. Get function names
+`fff_search::log` and `rmcp::service` are guard spans around an Index's whole
+life: their busy is wall clock, never CPU. Sorting every `time.busy` descending
+puts them on top and hides the answer. Judge by the per-request spans only.
 
-`[profile.release]` sets `strip = "symbols"` with no `debug`, so the release pdb
-resolves frames to a *neighbouring* public symbol:
+## 3. Timeline: which second burned the CPU
+
+```powershell
+pwsh tools/profile.ps1 -Id <pid> -Mode timeline -Samples 30
+```
+
+Prints one line per interval — CPU seconds, a bar, and the log events that closed
+in that same interval — then the per-thread totals and the span table for the
+window. This is the attribution step: it needs no debugger, so nothing perturbs
+the process.
+
+The shape it exists to show is burst, not steady state:
+
+```
+ 10s   0.23s
+ 11s   8.61s  ################################  grep(35695f)x6
+ 12s   6.42s  ############################
+ 13s   0.02s
+```
+
+Eight cores for two seconds is six concurrent greps over a 35k-file Root. Between
+bursts the same process sits at 0.2–0.5%. A 10-sample stack run that lands in the
+gap proves nothing, and one that lands in the burst makes every thread look busy.
+
+## 4. Stacks: which thread, which function
+
+```powershell
+pwsh tools/profile.ps1 -Id <pid> -Mode stacks -Samples 15
+```
+
+Ranks threads by CPU delta, attaches `cdb.exe` non-invasively (no admin), and
+prints the first project frame per hot thread per round. Thread names alone often
+answer it: `fff-snapshot-writer`, `fff-bg-N`, `notify-rs debouncer loop`,
+`fff-search-N` (rayon).
+
+`-SymPath <dir>` points at the directory holding the `.pdb`; by default it looks
+next to the exe, then at this repo's `target\release` and `target\prof`, because
+a deployed copy under `windows_utils\` carries no pdb of its own.
+
+A frame in `rayon_core::sleep::...wait_until_cold` is the pool spinning down: the
+CPU is real but no work is behind it, and spread over 20 `fff-search-N` threads it
+adds up to a phantom total. Trust the timeline for magnitude, the stack for names.
+
+## 5. Symbols: which build has them
+
+A plain `cargo build --release` is stripped — `[profile.release]` sets
+`strip = "symbols"` with no `debug` — so its pdb resolves every frame to a
+neighbouring public symbol:
 
 ```
 fff_mcp_http!core::fmt::num::impl$34::fmt+0x2b6837   ← offset over 0x10000
 ```
 
-An offset that large means "no symbol here", not a slow `fmt`. Build the profile
-that keeps debug info instead:
+An offset that large means "no symbol here", not a slow `fmt`.
 
 ```powershell
-$env:ZIG = "$pwd\tools\zig-0.17.1\zig.exe"
-$env:PATH = "$pwd\tools\zig-0.17.1;$env:PATH"
-cargo build --profile prof -p fff-mcp-http
-pwsh tools/profile.ps1 -Id <pid> -SymPath target\prof
+python build_fff_mcp_http.py
 ```
 
-To see the new binary's cost instead of the running release, start it from
-`target\prof\` with the same `--config`.
+That script sets `CARGO_PROFILE_RELEASE_DEBUG=2` and
+`CARGO_PROFILE_RELEASE_STRIP=none` for the release profile, so `target\release`
+gets a ~130 MB pdb and real frames:
 
-## 4. Whole-system traces
+```
+fff_mcp_http!fff_search::dbs::snapshot_writer::SnapshotWriter::push
+fff_mcp_http!fff_search::index::snapshot_write::RowSink::push
+```
 
-`wpr.exe` / `xperf.exe` come with the Windows Performance Toolkit and give a
-real call tree, but need an elevated shell:
+`cargo build --profile prof -p fff-mcp-http` is the alternative when the binary
+should not be the shipped one; it lands in `target\prof`.
+
+## 6. Whole-system traces
+
+`wpr.exe` / `xperf.exe` come with the Windows Performance Toolkit and give a real
+call tree, but need an elevated shell:
 
 ```powershell
 xperf -on PROC_THREAD+LOADER+PROFILE -stackwalk Profile
@@ -64,10 +124,11 @@ xperf -d trace.etl
 
 ## Pitfalls
 
-- Writing sampling output into a directory that is itself an open Root makes the
+- Sampling output written into a directory that is itself an open Root makes the
   watcher re-index it: a `notify-rs debouncer loop` thread then burns a full core
-  and looks like the culprit. Keep output outside every indexed root;
-  `tools/profile.ps1` defaults to `$env:TEMP\fff-profile`.
-- `crates/fff-core/benches/*.rs` cover the hot paths in isolation. Use a bench
-  when the question is "is this function fast" and the server when it is "what
-  is this process doing".
+  and looks like the culprit. `tools/profile.ps1` defaults to `$env:TEMP\fff-profile`.
+- `cdb` attach is cheap: 20 attaches in 20 seconds cost a quiet process nothing
+  measurable. When a sample shows work, it is the process's own.
+- `crates/fff-core/benches/*.rs` cover the hot paths in isolation. Use a bench when
+  the question is "is this function fast", the server when it is "what is this
+  process doing".
