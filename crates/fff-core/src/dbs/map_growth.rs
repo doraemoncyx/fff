@@ -126,14 +126,8 @@ fn volume_space(path: &Path) -> Option<(u64, u64)> {
         .collect();
     let mut free = 0u64;
     let mut total = 0u64;
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(
-            wide.as_ptr(),
-            &mut free,
-            &mut total,
-            std::ptr::null_mut(),
-        )
-    };
+    let ok =
+        unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
     (ok != 0).then_some((free, total))
 }
 
@@ -173,7 +167,9 @@ mod tests {
 
     fn create_db(env: &SharedEnv) -> Database<Bytes, Bytes> {
         let mut wtxn = env.write_txn().unwrap();
-        let db = env.create_database::<Bytes, Bytes>(&mut wtxn, None).unwrap();
+        let db = env
+            .create_database::<Bytes, Bytes>(&mut wtxn, None)
+            .unwrap();
         wtxn.commit().unwrap();
         db
     }
@@ -221,7 +217,8 @@ mod tests {
         let db = create_db(&env);
         let ceiling = Some(env.map_size() as u64);
 
-        let error = with_map_growth_capped(&env, ceiling, || put_batch(&env, &db, 256)).unwrap_err();
+        let error =
+            with_map_growth_capped(&env, ceiling, || put_batch(&env, &db, 256)).unwrap_err();
         assert!(error.is_map_full(), "{error}");
         assert_eq!(env.map_grows(), 0);
     }
@@ -246,14 +243,23 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         let page = page_size::get() as u64;
 
-        assert_eq!(next_map_size(&path, 2 * page, 8 * page), Some((4 * page) as usize));
-        assert_eq!(next_map_size(&path, 2 * page, 3 * page), Some((3 * page) as usize));
+        assert_eq!(
+            next_map_size(&path, 2 * page, 8 * page),
+            Some((4 * page) as usize)
+        );
+        assert_eq!(
+            next_map_size(&path, 2 * page, 3 * page),
+            Some((3 * page) as usize)
+        );
         assert_eq!(next_map_size(&path, 4 * page, 4 * page), None);
         assert_eq!(next_map_size(&path, 4 * page, 3 * page), None);
 
         // A file bigger than the recorded map dominates the next step.
         std::fs::write(path.join("data.mdb"), vec![0u8; (6 * page) as usize]).unwrap();
-        assert_eq!(next_map_size(&path, 4 * page, 16 * page), Some((12 * page) as usize));
+        assert_eq!(
+            next_map_size(&path, 4 * page, 16 * page),
+            Some((12 * page) as usize)
+        );
     }
 
     #[test]
@@ -263,8 +269,14 @@ mod tests {
         let big = 1024 * 1024 * 1024 * 1024u64;
         assert_eq!(ceiling_of((free, big)), free - big / RESERVE_DIVISOR);
         // A small volume keeps the flat gigabyte instead of the percentage.
-        assert_eq!(ceiling_of((free, 8 * 1024 * 1024 * 1024)), free - RESERVE_MIN_BYTES);
+        assert_eq!(
+            ceiling_of((free, 8 * 1024 * 1024 * 1024)),
+            free - RESERVE_MIN_BYTES
+        );
         assert_eq!(ceiling_of((0, 0)), 0);
-        assert!(volume_ceiling(dir.path()).is_some(), "the temp volume is measurable");
+        assert!(
+            volume_ceiling(dir.path()).is_some(),
+            "the temp volume is measurable"
+        );
     }
 }
