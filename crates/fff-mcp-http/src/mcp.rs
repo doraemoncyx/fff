@@ -14,7 +14,11 @@ indexes for parent and child directories and merges their results for find_files
 the file is not in the Index (ignored, binary, empty, over the size cap) the results say so instead of guessing. grep and \
 multi_grep run on one Index covering the tardir, so their results are content matches with one-based line numbers, never JSON. \
 Results carry absolute paths and paths relative to tardir. Content search has no index of file contents: the first call on a new \
-tardir waits for the scan, and a still-scanning Index answers with a partial result that says so.";
+tardir waits for the scan, and a still-scanning Index answers with a partial result that says so. The tardir is the whole scope: \
+name one specific directory — a checkout, a module, one content subdirectory — not a drive root, a whole resource tree or a build \
+directory. A tardir over the Root cap (500,000 files by default) is refused, nothing is indexed for it, and the error names its \
+top-level subdirectories — narrow the tardir to one of them and retry. path, paths and globs narrow inside a tardir; they never \
+rescue one over the cap.";
 
 // Stateless MCP surface exposing the same tools as `fff-mcp`.
 #[derive(Clone)]
@@ -32,7 +36,7 @@ impl FindFilesServer {
 impl FindFilesServer {
     #[tool(
         name = "find_files",
-        description = "Find indexed files by path fragment, glob, or regex. Fragments treat hyphens and underscores alike before fuzzy suggestions. Put a known directory in path. An empty query lists files in scope. Only files are indexed: a directory name matches nothing, so scope the search with path instead of querying the directory's name.",
+        description = "Find indexed files by path fragment, glob, or regex. Fragments treat hyphens and underscores alike before fuzzy suggestions. Put a known directory in path. An empty query lists files in scope. Only files are indexed: a directory name matches nothing, so scope the search with path instead of querying the directory's name. The tardir is one specific directory: over the Root cap (500,000 files by default) it is refused with nothing indexed, so name a subdirectory instead of a drive root or a whole resource tree.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -51,7 +55,7 @@ impl FindFilesServer {
 
     #[tool(
         name = "grep",
-        description = "Search source code with line numbers and surrounding context. For content questions, search directly with a module scope in path. Returned source verifies locations when it contains the required evidence.",
+        description = "Search source code with line numbers and surrounding context. For content questions, search directly with a module scope in path. Returned source verifies locations when it contains the required evidence. The tardir is one specific directory: over the Root cap (500,000 files by default) it is refused with nothing indexed, so name a subdirectory instead of a drive root or a whole resource tree.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -68,7 +72,7 @@ impl FindFilesServer {
 
     #[tool(
         name = "multi_grep",
-        description = "Search for any of several literal identifiers in one call. Set constraints to the directory, module, filename, or glob from the request. Set definitions_only=true for declarations. Results contain source lines and line numbers.",
+        description = "Search for any of several literal identifiers in one call. Set constraints to the directory, module, filename, or glob from the request. Set definitions_only=true for declarations. Results contain source lines and line numbers. The tardir is one specific directory: over the Root cap (500,000 files by default) it is refused with nothing indexed, so name a subdirectory instead of a drive root or a whole resource tree.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

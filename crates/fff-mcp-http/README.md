@@ -232,7 +232,10 @@ count); `bytes` and `roots` come from the live budget index. `map_bytes` is the
 map LMDB may use, `map_ceiling` the volume limit it grows towards (`null` when
 the volume cannot be measured), and `map_grows` how many times it has grown this
 process. `commits`, `rows`,
-`dropped`, `queued_bytes` and `busy` are the drain thread's own counters: a
+`dropped`, `queued_bytes` and `busy` are the drain thread's own counters.
+`dropped` counts batches the queue could not hold: each one is rows missing
+until the next scan of that Root writes them, so a non-zero `dropped` means
+the Snapshot is not fully populated — never that an answer was wrong. A
 `queued_bytes` that stops falling while `commits` stalls is a writer occupying
 the CPU, not a slow grep. `null` means no Snapshot is in use — off by config,
 unopenable, or latched off by a failure — never a zeroed object that looks like a
@@ -248,8 +251,8 @@ tardir share one scan.
 
 ## Root cap
 
-`--root-cap-files <N>` (default `500000`, `0` = no cap) bounds how big a
-directory may be and still become a Root. A tardir that would cross the cap is
+`--root-cap-files <N>` (default `500000`, `0` = no cap) bounds how many files a
+tardir may hold and still become a Root. A tardir that would cross the cap is
 not indexed at all: the walk stops at the crossing, so no Index, no watcher and
 no Snapshot row is ever created for it, and the request fails with
 `INVALID_PARAMS` naming the cap, the file count the walk stopped at, and that
