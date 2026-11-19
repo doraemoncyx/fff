@@ -1384,6 +1384,17 @@ pub(crate) fn sniff_binary_for_non_indexable(
                 continue;
             }
 
+            // A name from either table already answered: a png is never opened
+            // and a named text file is not sniffed. Unknown names still read.
+            let settled = {
+                let rel = crate::index::snapshot_write::relative_path(file, arena, &mut path_buf);
+                crate::binary_verdict::extension_verdict(rel.as_ref()).settled_by_name()
+            };
+            if settled {
+                push_verdict(rows, file, file_index, mtime_ns, arena, &mut path_buf);
+                continue;
+            }
+
             stats.sniffed += 1;
             let abs = file.write_absolute_path(arena, base_path, &mut path_buf);
             file.detect_binary_per_byte(abs, &mut chunk);

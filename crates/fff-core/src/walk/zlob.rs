@@ -1,7 +1,4 @@
-use crate::file_picker::{
-    FilePickerIgnoreOptions, is_ambiguous_binary_name, is_known_binary_extension_basename,
-    starts_with_binary_content,
-};
+use crate::file_picker::FilePickerIgnoreOptions;
 use crate::ignore::IGNORED_DIRS;
 use crate::types::FileItem;
 use crate::walk::{WalkIgnoreRules, WalkLimits, WalkOutput, mtime_ns};
@@ -137,9 +134,7 @@ pub(crate) fn walk_collect_files(
                     .map_or(0, |d| d.as_secs());
                 let basename_offset = entry.basename_offset_in_relative_lossy();
                 let basename = &rel_str[basename_offset..];
-                let is_binary = is_known_binary_extension_basename(basename)
-                    && (!is_ambiguous_binary_name(basename)
-                        || starts_with_binary_content(entry.path()));
+                let (is_binary, _) = crate::binary_verdict::initial_verdict(entry.path());
                 let mut item = FileItem::new_raw(
                     basename_offset as u16,
                     target.len(),
@@ -188,8 +183,7 @@ pub(crate) fn walk_collect_files(
             None => entry.basename().unwrap_or(""),
             Some(_) => &relative_path[basename_offset..],
         };
-        let is_binary = is_known_binary_extension_basename(basename)
-            && (!is_ambiguous_binary_name(basename) || starts_with_binary_content(entry.path()));
+        let is_binary = crate::binary_verdict::initial_verdict(entry.path()).0;
 
         let (size, modified, modified_ns) = match target {
             Some(meta) => {

@@ -627,6 +627,16 @@ mod tests {
         crate::walk::mtime_ns(std::fs::metadata(path).unwrap().modified().ok())
     }
 
+    fn is_binary(shared: &SharedFilePicker, name: &str) -> Option<bool> {
+        let guard = shared.read().unwrap();
+        let picker = guard.as_ref()?;
+        picker
+            .get_files()
+            .iter()
+            .find(|file| file.relative_path(picker).ends_with(name))
+            .map(|file| file.is_binary())
+    }
+
     fn set_mtime(path: &std::path::Path, at: std::time::SystemTime) {
         std::fs::File::options()
             .write(true)
@@ -1163,7 +1173,10 @@ mod tests {
 
         let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
         let (first, cold) = run_scan(root, Some(&store));
-        assert_eq!(cold.sniffed, 2, "the png and the over-limit text file");
+        assert_eq!(
+            cold.sniffed, 1,
+            "the over-limit text file; the png's name answered"
+        );
         assert_eq!(cold.sniff_hits, 0);
         let first_matches = matches(&first, "plain_marker");
         assert_eq!(first_matches.len(), 1);
@@ -1216,6 +1229,62 @@ mod tests {
         assert_eq!(warm.sniff_hits, 2);
         assert_eq!(matches(&second, "blob_marker").len(), 0);
         assert_eq!(matches(&second, "large_text_marker").len(), 1);
+    }
+
+    // A named text file is never sniffed, an unknown name still is, and both
+    // stay grep-able: the sources differ, the verdict contract does not.
+    #[test]
+    fn a_named_text_file_is_not_sniffed_and_an_unknown_one_still_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let limit = crate::constants::MAX_INDEXABLE_FILE_SIZE;
+        let mut named = vec![b'a'; limit + 1];
+        named[..13].copy_from_slice(b"named_marker\n");
+        std::fs::write(root.join("big.rs"), &named).unwrap();
+        let mut unknown = vec![b'b'; limit + 1];
+        unknown[..15].copy_from_slice(b"unknown_marker\n");
+        std::fs::write(root.join("big.unknownext"), &unknown).unwrap();
+        std::fs::write(root.join("small.rs"), "small_marker\n").unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (scan, cold) = run_scan(root, Some(&store));
+
+        assert_eq!(cold.sniffed, 1, "only the unknown name needs its bytes");
+        assert_eq!(is_binary(&scan, "big.rs"), Some(false));
+        assert_eq!(matches(&scan, "small_marker").len(), 1, "still indexed");
+        assert_eq!(matches(&scan, "named_marker").len(), 1, "still grep-able");
+        assert_eq!(matches(&scan, "unknown_marker").len(), 1);
+    }
+
+    // The verdict's old source survives the new one: a row keeps saying binary
+    // for a text-named file, and the scan does not re-read it to disagree.
+    #[test]
+    fn a_verdict_from_the_bytes_outlives_the_name_that_contradicts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("payload.rs"), b"marker_one\0payload\n").unwrap();
+
+        let store = std::sync::Arc::new(SnapshotStore::open(db.path()).unwrap());
+        let (first, cold) = run_scan(root, Some(&store));
+        assert_eq!(cold.content_reads, 1, "the content pass reads it");
+        assert_eq!(is_binary(&first, "payload.rs"), Some(true), "bytes won");
+        assert_eq!(
+            matches(&first, "marker_one").len(),
+            0,
+            "binary is not grepped"
+        );
+        drop(first);
+
+        let (second, warm) = run_scan(root, Some(&store));
+        assert_eq!(warm.row_hits, 1);
+        assert_eq!(warm.content_reads, 0, "the row answered");
+        assert_eq!(
+            is_binary(&second, "payload.rs"),
+            Some(true),
+            "the row's verdict outlived the name"
+        );
     }
 
     #[test]

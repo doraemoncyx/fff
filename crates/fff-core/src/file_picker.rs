@@ -1931,8 +1931,9 @@ impl FilePicker {
         file.update_metadata(&self.cache_budget, modified_time, Some(size));
 
         // Re-classify binary status from current content (chunked, fixed
-        // buffer). Already-binary files are left alone.
-        if !file.is_binary() {
+        // buffer). Already-binary files are left alone, and a name the tables
+        // answer costs no read at all.
+        if !file.is_binary() && !crate::binary_verdict::verdict_for(path).settled_by_name() {
             let mut chunk = [0u8; crate::types::BINARY_CLASSIFICATION_CHUNK_SIZE];
             file.detect_binary_per_byte(path, &mut chunk);
         }
@@ -1985,11 +1986,14 @@ impl FilePicker {
 
         // we have to perform manual classification for every new file this will be
         // batched during the scan, this is the path when the file is ad-hoc added to the sync
-        file_item.detect_binary_per_byte(
-            path_for_index,
-            // inline chunk buf
-            &mut [0u8; crate::types::BINARY_CLASSIFICATION_CHUNK_SIZE],
-        );
+        // A name from either table already settled the verdict.
+        if !crate::binary_verdict::verdict_for(path_for_index).settled_by_name() {
+            file_item.detect_binary_per_byte(
+                path_for_index,
+                // inline chunk buf
+                &mut [0u8; crate::types::BINARY_CLASSIFICATION_CHUNK_SIZE],
+            );
+        }
 
         let builder = self.sync_data.overflow_builder.get_or_insert_with(|| {
             // we know that overflow would never create more files during the file
@@ -2402,10 +2406,13 @@ impl FileSync {
 
         let mut files: Vec<FileItem> = Vec::with_capacity(pairs.len());
         let mut mtime_ns: Vec<u64> = Vec::with_capacity(pairs.len());
-        for (file, _, ns) in pairs {
+        // How the names triaged the tree, before any content pass reads a byte.
+        let mut verdicts = crate::binary_verdict::VerdictCounts::default();
+        for (file, rel, ns) in pairs {
             // Symlink-to-dir markers only contributed a DirItem; keep them out
             // of the file table so they don't appear as searchable files.
             if !file.is_symlink_dir() {
+                verdicts.record(crate::binary_verdict::extension_verdict(&rel));
                 files.push(file);
                 mtime_ns.push(ns);
             }
@@ -2482,6 +2489,15 @@ impl FileSync {
             files_vec_bytes as f64 / 1_048_576.0,
             dir_table_bytes as f64 / 1_048_576.0,
             file_item_size,
+        );
+
+        // The verdict's two sources: the name answered, or the bytes still have to.
+        info!(
+            binary_by_name = verdicts.binary,
+            text_by_name = verdicts.text,
+            mixed_use = verdicts.mixed_use,
+            left_to_bytes = verdicts.unknown,
+            "binary verdict triage"
         );
 
         let base_count = files.len();
@@ -2671,7 +2687,7 @@ fn expand_symlink_dir_into(
             let modified = time
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                 .map_or(0, |d| d.as_secs());
-            let is_binary = is_known_binary_extension(&path);
+            let is_binary = is_binary_file(&path);
             let filename_offset = rel.rfind('/').map(|i| i + 1).unwrap_or(0) as u16;
             let item = FileItem::new_raw(filename_offset, meta.len(), modified, None, is_binary);
             pairs.push((item, rel, crate::walk::mtime_ns(time)));
@@ -2821,101 +2837,12 @@ fn push_dir_item(
 #[inline]
 #[doc(hidden)]
 pub fn is_known_binary_extension(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
-    is_binary_extension_str(ext)
+    crate::binary_verdict::verdict_for(path).names_binary()
 }
 
-// Extension check, then a content sniff for extensions shared by text and binary formats.
+// The walk's binary bit: the tables answer first, the head only for mixed-use.
 pub(crate) fn is_binary_file(path: &Path) -> bool {
-    is_known_binary_extension(path)
-        && (!path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(is_ambiguous_binary_name)
-            || starts_with_binary_content(path))
-}
-
-// `.blp` names both GTK Blueprint text and a binary texture format.
-#[inline]
-pub(crate) fn is_ambiguous_binary_name(name: &str) -> bool {
-    let name = name.as_bytes();
-    name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".blp")
-}
-
-pub(crate) fn starts_with_binary_content(path: &Path) -> bool {
-    use std::io::Read;
-    let mut chunk = [0u8; 4096];
-    std::fs::File::open(path)
-        .and_then(|mut file| file.read(&mut chunk))
-        .is_ok_and(|read| crate::types::detect_binary_content(&chunk[..read]))
-}
-
-/// Like [`is_known_binary_extension`] but takes a basename string directly,
-/// avoiding `Path::extension()` overhead. Mirrors `Path::extension()`
-/// semantics: dotfiles with no other dots → no extension. Used by the zlob
-/// walker, which already has the basename slice from traversal.
-#[cfg(feature = "zlob")]
-#[inline]
-pub(crate) fn is_known_binary_extension_basename(name: &str) -> bool {
-    match name.rfind('.') {
-        Some(pos) if pos > 0 && pos < name.len() - 1 => is_binary_extension_str(&name[pos + 1..]),
-        _ => false,
-    }
-}
-
-#[inline]
-fn is_binary_extension_str(ext: &str) -> bool {
-    matches!(
-        ext,
-        // Images
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "tiff" | "tif" | "avif" |
-        "heic" | "heif" | "jxl" | "jp2" | "j2k" | "psd" | "icns" | "cur" | "cr2" |
-        "nef" | "dng" | "tga" |
-        // GPU / VFX texture formats
-        "rgbe" | "hdr" | "exr" | "dds" | "ktx" | "ktx2" | "pvr" | "astc" |
-        // Adobe Illustrator (PDF wrapper) / Apple webarchive / MIME HTML archive
-        "ai" | "webarchive" | "mhtml" |
-        // Video/Audio
-        "mp4" | "avi" | "mov" | "wmv" | "mkv" | "mp3" | "wav" | "flac" | "ogg" | "m4a" |
-        "aac" | "webm" | "flv" | "mpg" | "mpeg" | "wma" | "opus" | "pcm" | "reapeaks" |
-        // Compressed/Archives
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "lz4" | "lzma" |
-        "cab" | "cpio" | "jsonlz4" |
-        // Packages/Installers
-        "deb" | "rpm" | "apk" | "dmg" | "msi" | "iso" | "nupkg" | "whl" | "egg" |
-        "appimage" | "flatpak" | "crx" | "pak" |
-        // Executables/Libraries
-        "exe" | "dll" | "so" | "dylib" | "o" | "a" | "lib" | "bin" | "elf" |
-        // Documents (binary office formats)
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" |
-        // Databases
-        "db" | "sqlite" | "sqlite3" | "mdb" |
-        // SQLite / LevelDB auxiliary files
-        "sqlite-wal" | "sqlite-shm" | "sqlite3-wal" | "sqlite3-shm" |
-        "db-wal" | "db-shm" | "ldb" |
-        // Fonts
-        "ttf" | "otf" | "woff" | "woff2" | "eot" |
-        // Compiled/Runtime
-        "class" | "pyc" | "pyo" | "wasm" | "dex" | "jar" | "war" |
-        // OCaml / Swift / Objective-C build artefacts
-        "cmi" | "cmt" | "cmti" | "cmx" | "nib" |
-        "swiftdeps" | "swiftdeps~" | "swiftdoc" | "swiftmodule" | "swiftsourceinfo" |
-        // ML/Data Science
-        "npy" | "npz" | "h5" | "hdf5" | "pt" | "onnx" |
-        "safetensors" | "tfrecord" | "tflite" | "gguf" | "ggml" | "joblib" |
-        // 3D/Game assets (indexing also sniffs `.blp`, see `is_ambiguous_binary_name`)
-        "glb" | "blend" | "blp" |
-        // Gzipped-XML / binary maps
-        "dia" | "bcmap" |
-        // Protobuf wire format
-        "pb" |
-        // Data/serialized
-        "parquet" | "arrow" |
-        // IDE/OS metadata
-        "suo"
-    )
+    crate::binary_verdict::initial_verdict(path).0
 }
 
 /// Length of the longest shared directory prefix of two relative dir

@@ -107,6 +107,9 @@ compile_error!(
 pub mod shared;
 pub use shared::*;
 
+/// The Binary verdict's extension tables, and the additive operator list.
+pub mod binary_verdict;
+
 /// Core file picker single thread: filesystem indexing, background watching, and fuzzy search.
 /// See [`FilePicker`](file_picker::FilePicker) for the main entry point.
 pub mod file_picker;

@@ -29,11 +29,16 @@ implementation), file table.
 
 ## Binary verdict
 
-The judgement that a file's contents are not text. It is derived by reading the
-file, it is part of the Content index, and it decides whether grep may read that
-file at all.
+The judgement that a file's contents are not text. It has two sources: the file
+name, when the extension sits on the built-in binary or text table, and
+otherwise the file's own bytes, read by the content pass. A mixed-use
+extension — `.blp` names both a Blueprint template and a texture — always goes
+to the bytes. The verdict is part of the Content index, it decides whether grep
+may read that file at all, and the name-based side of it is a fast first answer
+that a later read may still turn binary.
 
-_Not_: extension, ignored file (a binary is indexed, not skipped).
+_Not_: ignored file (a binary is indexed, not skipped). A file extension is one
+source of the verdict, not the verdict itself.
 
 ## Snapshot
 
