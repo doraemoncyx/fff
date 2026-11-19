@@ -1,16 +1,17 @@
 use crate::file_picker::FilePickerIgnoreOptions;
 use crate::ignore::non_git_repo_overrides;
 use crate::types::FileItem;
-use crate::walk::{WalkOutput, mtime_ns};
+use crate::walk::{WalkLimits, WalkOutput, mtime_ns};
 use crate::watch::is_git_file;
 use ignore::WalkBuilder;
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[tracing::instrument(skip_all, name = "ripgrep walker", level = "info")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_collect_files(
     base_path: &Path,
     is_git_repo: bool,
@@ -19,6 +20,7 @@ pub(crate) fn walk_collect_files(
     synced_files_count: &Arc<AtomicUsize>,
     _ignore_options: &FilePickerIgnoreOptions,
     _scope: Option<&Path>,
+    limits: WalkLimits<'_>,
 ) -> crate::Result<WalkOutput> {
     let mut walk_builder = WalkBuilder::new(base_path);
     walk_builder
@@ -41,12 +43,38 @@ pub(crate) fn walk_collect_files(
     // dir, so this keeps one mutex acquisition per entry.
     let collected =
         parking_lot::Mutex::new((Vec::<(FileItem, String, u64)>::new(), Vec::<String>::new()));
+    // Set when a visitor returns Quit instead of exhausting the tree.
+    let stopped = AtomicBool::new(false);
     walker.run(|| {
         let collected = &collected;
+        let stopped = &stopped;
         let counter = Arc::clone(synced_files_count);
         let base_path = base_path.to_path_buf();
 
+        // Pushing the file past the limit is what ends the walk. In-flight
+        // threads may overshoot by at most one entry each.
+        let push = move |item: FileItem, rel: String, modified_ns: u64| {
+            let mut guard = collected.lock();
+            guard.0.push((item, rel, modified_ns));
+            let n = guard.0.len();
+            drop(guard);
+
+            if limits.exceeded(n) {
+                stopped.store(true, Ordering::Relaxed);
+                ignore::WalkState::Quit
+            } else {
+                ignore::WalkState::Continue
+            }
+        };
+
         Box::new(move |result| {
+            // Cancellation is checked per entry so a picker shutdown does
+            // not have to wait for the tree.
+            if limits.cancelled() {
+                stopped.store(true, Ordering::Relaxed);
+                return ignore::WalkState::Quit;
+            }
+
             let Ok(entry) = result else {
                 return ignore::WalkState::Continue;
             };
@@ -80,7 +108,8 @@ pub(crate) fn walk_collect_files(
                     let offset = rel_dir.len() as u16;
                     let item = FileItem::new_raw(offset, 0, 0, None, false);
                     item.set_symlink_dir(true);
-                    collected.lock().0.push((item, rel_dir, 0));
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    return push(item, rel_dir, 0);
                 } else {
                     let time = target.modified().ok();
                     let modified = time
@@ -94,13 +123,9 @@ pub(crate) fn walk_collect_files(
                         modified,
                     );
                     file_item.set_symlink(true);
-                    collected
-                        .lock()
-                        .0
-                        .push((file_item, rel_str, mtime_ns(time)));
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    return push(file_item, rel_str, mtime_ns(time));
                 }
-                counter.fetch_add(1, Ordering::Relaxed);
-                return ignore::WalkState::Continue;
             }
 
             if file_type.is_some_and(|ft| ft.is_file()) {
@@ -114,10 +139,11 @@ pub(crate) fn walk_collect_files(
                 let modified_ns = mtime_ns(metadata.as_ref().and_then(|m| m.modified().ok()));
                 let (file_item, rel_path) =
                     FileItem::new_from_walk(path, &base_path, None, metadata.as_ref());
-
-                collected.lock().0.push((file_item, rel_path, modified_ns));
                 counter.fetch_add(1, Ordering::Relaxed);
-            } else if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                return push(file_item, rel_path, modified_ns);
+            }
+
+            if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 let path = entry.path();
                 if !is_git_file(path)
                     && let Ok(rel) = path.strip_prefix(&base_path)
@@ -137,5 +163,6 @@ pub(crate) fn walk_collect_files(
         pairs,
         dirs,
         ignore_rules: None,
+        truncated: stopped.load(Ordering::Relaxed),
     })
 }

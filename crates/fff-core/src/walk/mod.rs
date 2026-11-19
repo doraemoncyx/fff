@@ -7,6 +7,7 @@
 
 use crate::types::FileItem;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 #[cfg(feature = "zlob")]
@@ -20,12 +21,48 @@ mod ripgrep;
 pub(crate) use ripgrep::walk_collect_files;
 
 pub(crate) struct WalkOutput {
-    /// File item, relative path, and the file's modification time in
-    /// nanoseconds since the Unix epoch (0 when it could not be read).
+    // File item, relative path, and the file's modification time in
+    // nanoseconds since the Unix epoch (0 when it could not be read).
     pub(crate) pairs: Vec<(FileItem, String, u64)>,
-    /// Every non-ignored directory the walk visited, relative, ending with /
+    // Every non-ignored directory the walk visited, relative, ending with /
     pub(crate) dirs: Vec<String>,
     pub(crate) ignore_rules: Option<WalkIgnoreRules>,
+    // The walk stopped before exhausting the tree (limit hit or cancelled).
+    pub(crate) truncated: bool,
+}
+
+// Walks that no signal can stop: the ones without a picker behind them.
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+// How a walk may end early: a file limit and the picker's cancel flag.
+// `limit == 0` walks the whole tree, which is the pre-guardrail behaviour.
+#[derive(Clone, Copy)]
+pub(crate) struct WalkLimits<'a> {
+    limit: usize,
+    cancel: &'a AtomicBool,
+}
+
+impl<'a> WalkLimits<'a> {
+    pub(crate) fn new(limit: usize, cancel: &'a AtomicBool) -> Self {
+        Self { limit, cancel }
+    }
+
+    pub(crate) fn unlimited() -> WalkLimits<'static> {
+        WalkLimits {
+            limit: 0,
+            cancel: &NEVER_CANCELLED,
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    // One file past the limit proves the tree is bigger than the limit, so
+    // hitting the limit exactly never reports a truncated walk.
+    fn exceeded(&self, collected: usize) -> bool {
+        self.limit != 0 && collected > self.limit
+    }
 }
 
 pub(crate) struct WalkIgnoreRules {
@@ -84,10 +121,12 @@ mod symlink_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{mtime_ns, walk_collect_files};
+    use super::{WalkLimits, WalkOutput, mtime_ns, walk_collect_files};
+    use crate::file_picker::FilePickerIgnoreOptions;
     use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     // Backend-agnostic parity check: both the zlob and ripgrep walkers must
     // respect .gitignore, skip hidden files in a git repo, and surface the
@@ -106,8 +145,7 @@ mod tests {
         fs::write(root.join("target/out.bin"), "bin").unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(root, true, false, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(root, true, false, 1, &counter, &Default::default(), None).unwrap();
 
         let mut names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
         names.sort();
@@ -131,8 +169,7 @@ mod tests {
         fs::write(root.join("index.js"), "x").unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(root, false, false, 1, &counter, &Default::default(), None).unwrap();
         let names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
 
         assert!(names.iter().any(|n| n.ends_with("index.js")));
@@ -157,8 +194,7 @@ mod tests {
         std::os::unix::fs::symlink("../dotfiles/missing", root.join("broken")).unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(&root, false, true, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(&root, false, true, 1, &counter, &Default::default(), None).unwrap();
         let mut names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
         names.sort();
 
@@ -169,8 +205,7 @@ mod tests {
         assert_eq!(item.size, 10);
         assert_eq!(&rel[item.filename_offset_in_relative_path()..], "sesh.toml");
 
-        let out = walk_collect_files(&root, false, false, 1, &counter, &Default::default(), None)
-            .unwrap();
+        let out = walk_all(&root, false, false, 1, &counter, &Default::default(), None).unwrap();
         let names: Vec<String> = out.pairs.into_iter().map(|(_, rel, _)| rel).collect();
         assert_eq!(names, ["projects.toml"]);
     }
@@ -189,8 +224,7 @@ mod tests {
         fs::write(root.join("Cargo.toml"), "x").unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(root, true, false, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(root, true, false, 1, &counter, &Default::default(), None).unwrap();
 
         let rules = out.ignore_rules.expect("zlob surfaces ignore rules");
         assert!(rules.is_ignored(Path::new("target/")));
@@ -240,8 +274,7 @@ mod tests {
 
         for base in [&root, &worktree] {
             let counter = Arc::new(AtomicUsize::new(0));
-            let out = walk_collect_files(base, true, false, 1, &counter, &Default::default(), None)
-                .unwrap();
+            let out = walk_all(base, true, false, 1, &counter, &Default::default(), None).unwrap();
             let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
             assert!(names.iter().any(|n| n == "src/a.txt"), "{names:?}");
@@ -292,8 +325,7 @@ mod tests {
         }
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(root, true, false, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(root, true, false, 1, &counter, &Default::default(), None).unwrap();
         let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
         assert!(names.iter().any(|n| n == "src/hit.ts"), "{names:?}");
@@ -344,7 +376,7 @@ mod tests {
                 ..Default::default()
             };
             let counter = Arc::new(AtomicUsize::new(0));
-            walk_collect_files(&root, true, false, 1, &counter, &options, None)
+            walk_all(&root, true, false, 1, &counter, &options, None)
                 .unwrap()
                 .pairs
                 .into_iter()
@@ -402,13 +434,170 @@ mod tests {
         fs::write(root.join("b.txt"), "b").unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let out =
-            walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
+        let out = walk_all(root, false, false, 1, &counter, &Default::default(), None).unwrap();
 
         assert_eq!(out.pairs.len(), 2);
         for (_, rel, reported) in &out.pairs {
             let on_disk = fs::metadata(root.join(rel)).unwrap().modified().ok();
             assert_eq!(*reported, mtime_ns(on_disk), "{rel}");
+        }
+    }
+
+    // Past the limit the walk stops and says so; in-flight threads may
+    // overshoot by one entry each.
+    #[test]
+    fn limit_below_file_count_is_truncated() {
+        const TOTAL: usize = 64;
+        const LIMIT: usize = 8;
+        const THREADS: usize = 4;
+
+        let dir = tempfile::tempdir().unwrap();
+        tree_with_files(dir.path(), TOTAL);
+        let cancel = AtomicBool::new(false);
+
+        let out = walk_capped(dir.path(), LIMIT, THREADS, &cancel);
+
+        assert!(out.truncated, "stopping at the limit truncates the walk");
+        assert!(
+            out.pairs.len() > LIMIT,
+            "collected {} files, never crossed the limit {LIMIT}",
+            out.pairs.len()
+        );
+        assert!(
+            out.pairs.len() <= LIMIT + THREADS,
+            "collected {} files, past limit + threads {THREADS}",
+            out.pairs.len()
+        );
+    }
+
+    // A limit is a cap, not a truncation trigger: a tree that fits exactly is
+    // walked in full.
+    #[test]
+    fn limit_equal_to_file_count_is_complete() {
+        const TOTAL: usize = 24;
+
+        let dir = tempfile::tempdir().unwrap();
+        tree_with_files(dir.path(), TOTAL);
+        let cancel = AtomicBool::new(false);
+
+        let out = walk_capped(dir.path(), TOTAL, 4, &cancel);
+
+        assert_eq!(out.pairs.len(), TOTAL);
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn limit_above_file_count_is_complete() {
+        const TOTAL: usize = 24;
+
+        let dir = tempfile::tempdir().unwrap();
+        tree_with_files(dir.path(), TOTAL);
+        let cancel = AtomicBool::new(false);
+
+        let out = walk_capped(dir.path(), TOTAL * 4, 4, &cancel);
+
+        assert_eq!(out.pairs.len(), TOTAL);
+        assert!(!out.truncated);
+    }
+
+    // A cancel that lands mid-walk ends it within a few files and marks the
+    // result truncated instead of walking the rest of the tree.
+    #[test]
+    fn cancel_mid_scan_is_truncated() {
+        const TOTAL: usize = 1000;
+        const CANCEL_AFTER: usize = 32;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        tree_with_files(&root, TOTAL);
+
+        // The walk runs on a worker and the test thread polls its progress, so
+        // the cancel normally lands early. A loaded machine can still finish
+        // the tree between two polls, so an attempt that saw no cancel retries.
+        for _ in 0..5 {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let walk = {
+                let root = root.clone();
+                let counter = Arc::clone(&counter);
+                let cancel = Arc::clone(&cancel);
+                std::thread::spawn(move || {
+                    walk_collect_files(
+                        &root,
+                        false,
+                        false,
+                        4,
+                        &counter,
+                        &Default::default(),
+                        None,
+                        WalkLimits::new(0, &cancel),
+                    )
+                })
+            };
+
+            while counter.load(Ordering::Relaxed) < CANCEL_AFTER {
+                std::hint::spin_loop();
+            }
+            cancel.store(true, Ordering::Release);
+
+            let out = walk.join().unwrap().unwrap();
+            if !out.truncated {
+                continue;
+            }
+            assert!(
+                out.pairs.len() < TOTAL,
+                "cancel cut nothing short, collected all {TOTAL} files"
+            );
+            return;
+        }
+        panic!("no cancel landed mid-walk in 5 attempts");
+    }
+
+    // The call shape every test predating the limit uses: no cap, no cancel.
+    fn walk_all(
+        base_path: &Path,
+        is_git_repo: bool,
+        follow_symlinks: bool,
+        threads: usize,
+        counter: &Arc<AtomicUsize>,
+        options: &FilePickerIgnoreOptions,
+        scope: Option<&Path>,
+    ) -> crate::Result<WalkOutput> {
+        walk_collect_files(
+            base_path,
+            is_git_repo,
+            follow_symlinks,
+            threads,
+            counter,
+            options,
+            scope,
+            WalkLimits::unlimited(),
+        )
+    }
+
+    fn walk_capped(root: &Path, limit: usize, threads: usize, cancel: &AtomicBool) -> WalkOutput {
+        walk_collect_files(
+            root,
+            false,
+            false,
+            threads,
+            &Arc::new(AtomicUsize::new(0)),
+            &Default::default(),
+            None,
+            WalkLimits::new(limit, cancel),
+        )
+        .unwrap()
+    }
+
+    // Spreads `count` files over a few subdirectories so the parallel walk has
+    // more than one directory to work on.
+    fn tree_with_files(root: &Path, count: usize) {
+        let dirs = count.clamp(1, 4);
+        for d in 0..dirs {
+            fs::create_dir_all(root.join(format!("d{d}"))).unwrap();
+        }
+        for i in 0..count {
+            fs::write(root.join(format!("d{}/f{i}.txt", i % dirs)), "x").unwrap();
         }
     }
 }

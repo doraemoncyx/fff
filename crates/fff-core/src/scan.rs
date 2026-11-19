@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::FileSync;
 use crate::dbs::SnapshotStore;
@@ -186,6 +186,9 @@ impl ScanJob {
             config.follow_symlinks,
             config.expand_symlink_dirs,
             &config.ignore_options,
+            // No root cap yet: 0 walks the whole tree. The picker's cancel
+            // flag ends the walk early when the picker is being dropped.
+            crate::walk::WalkLimits::new(0, &signals.cancelled),
         ) {
             Ok(sync) => sync,
             Err(e) => {
@@ -193,6 +196,10 @@ impl ScanJob {
                 return;
             }
         };
+
+        if sync.truncated {
+            warn!("scan walk stopped early; the file tables are partial");
+        }
 
         // 2. Populate the file list
         let git_status_worker;

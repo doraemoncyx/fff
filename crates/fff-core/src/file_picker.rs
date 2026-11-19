@@ -47,7 +47,7 @@ use crate::types::{
     ContentCacheBudget, DirItem, DirSearchResult, FileItem, MixedItemRef, MixedSearchResult,
     PaginationArgs, Score, ScoringContext, SearchResult,
 };
-use crate::walk::WalkOutput;
+use crate::walk::{WalkLimits, WalkOutput};
 use crate::watch::BackgroundWatcher;
 use ahash::AHashMap;
 use fff_query_parser::FFFQuery;
@@ -134,6 +134,8 @@ pub(crate) struct FileSync {
     /// Ignore rules the walker assembled (zlob backend only). Shared with the
     /// background watcher so filesystem events can be filtered without libgit2.
     pub(crate) ignore_rules: Option<Arc<crate::walk::WalkIgnoreRules>>,
+    // The walk stopped early (file limit or cancel), so the tables are partial.
+    pub(crate) truncated: bool,
 }
 
 impl FileSync {
@@ -154,6 +156,7 @@ impl FileSync {
             bigram_overlay: None,
             chunked_paths: None,
             ignore_rules: None,
+            truncated: false,
         }
     }
 
@@ -1234,6 +1237,7 @@ impl FilePicker {
             self.follow_symlinks,
             self.expand_symlink_dirs,
             &self.ignore_options,
+            WalkLimits::new(0, &self.signals.cancelled),
         )?;
 
         self.sync_data = sync;
@@ -2330,6 +2334,7 @@ impl FileSync {
         follow_symlinks: bool,
         expand_symlink_dirs: bool,
         ignore_options: &FilePickerIgnoreOptions,
+        limits: WalkLimits<'_>,
     ) -> Result<FileSync, Error> {
         let scan_start = std::time::Instant::now();
         info!("SCAN: Starting filesystem walk and git status (async)");
@@ -2349,6 +2354,7 @@ impl FileSync {
             dirs: mut walked_dirs,
             mut pairs,
             ignore_rules,
+            truncated,
         } = crate::walk::walk_collect_files(
             base_path,
             is_git_repo,
@@ -2357,13 +2363,15 @@ impl FileSync {
             synced_files_count,
             ignore_options,
             None,
+            limits,
         )?;
         let ignore_rules = ignore_rules.map(Arc::new);
 
         // Symlinked dirs stay searchable even when the walker didn't descend into
         // them (follow_symlinks=false, or the zlob backend on Windows where
         // following is unimplemented). Targets already descended are skipped.
-        let expanded = if expand_symlink_dirs {
+        // A truncated walk is already incomplete, so padding it is pointless.
+        let expanded = if expand_symlink_dirs && !truncated {
             expand_symlink_dir_pairs(base_path, &mut pairs, is_git_repo, ignore_rules.as_deref())
         } else {
             0
@@ -2495,6 +2503,7 @@ impl FileSync {
             bigram_overlay: None,
             chunked_paths: Some(Arc::new(chunked_paths)),
             ignore_rules,
+            truncated,
         })
     }
 }

@@ -4,17 +4,18 @@ use crate::file_picker::{
 };
 use crate::ignore::IGNORED_DIRS;
 use crate::types::FileItem;
-use crate::walk::{WalkIgnoreRules, WalkOutput, mtime_ns};
+use crate::walk::{WalkIgnoreRules, WalkLimits, WalkOutput, mtime_ns};
 use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::SystemTime;
 use zlob::walk::{WalkBuilder, WalkFlags, WalkMetadata, WalkState};
 
 const PROGRESS_STEP: usize = 13;
 
 #[tracing::instrument(skip_all, name = "zlob walker", level = "info")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_collect_files(
     base_path: &Path,
     is_git_repo: bool,
@@ -23,6 +24,7 @@ pub(crate) fn walk_collect_files(
     synced_files_count: &Arc<AtomicUsize>,
     ignore_options: &FilePickerIgnoreOptions,
     scope: Option<&Path>,
+    limits: WalkLimits<'_>,
 ) -> crate::Result<WalkOutput> {
     let use_non_git_defaults = !is_git_repo && !ignore_options.disable_git;
     let mut flags = WalkFlags::GITIGNORE;
@@ -67,8 +69,12 @@ pub(crate) fn walk_collect_files(
     // Single lock for both collections: every entry is either a file or a
     // dir, so this keeps one mutex acquisition per entry.
     let collected = Mutex::new((Vec::new(), Vec::new()));
+    // Set when the visitor returns Quit instead of exhausting the tree.
+    let stopped = AtomicBool::new(false);
 
-    let push_pair = |item: FileItem, rel_str: String, modified_ns: u64| {
+    // `synced_files_count` is throttled, so the limit is judged on the
+    // collected length instead. Pushing past the limit ends the walk.
+    let push_pair = |item: FileItem, rel_str: String, modified_ns: u64| -> WalkState {
         let mut guard = collected.lock();
         guard.0.push((item, rel_str, modified_ns));
         let n = guard.0.len();
@@ -77,9 +83,21 @@ pub(crate) fn walk_collect_files(
         if n % PROGRESS_STEP == 0 {
             synced_files_count.store(n, Ordering::Relaxed);
         }
+        if limits.exceeded(n) {
+            stopped.store(true, Ordering::Relaxed);
+            WalkState::Quit
+        } else {
+            WalkState::Continue
+        }
     };
 
     let outcome = match builder.run(|entry| {
+        // Cancellation is checked per entry so a picker shutdown does not
+        // have to wait for the tree.
+        if limits.cancelled() {
+            stopped.store(true, Ordering::Relaxed);
+            return WalkState::Quit;
+        }
         if ignore_options.disable_git && entry.path().file_name().is_some_and(|name| name == ".git")
         {
             return WalkState::SkipDir;
@@ -111,7 +129,7 @@ pub(crate) fn walk_collect_files(
                 let offset = rel_dir.len() as u16;
                 let item = FileItem::new_raw(offset, 0, 0, None, false);
                 item.set_symlink_dir(true);
-                push_pair(item, rel_dir, 0);
+                return push_pair(item, rel_dir, 0);
             } else {
                 let time = target.modified().ok();
                 let modified = time
@@ -131,9 +149,8 @@ pub(crate) fn walk_collect_files(
                 );
                 item.mark_definition_language(basename);
                 item.set_symlink(true);
-                push_pair(item, rel_str, mtime_ns(time));
+                return push_pair(item, rel_str, mtime_ns(time));
             }
-            return WalkState::Continue;
         }
 
         // Followed links keep the Symlink kind and lstat metadata, so stat
@@ -198,16 +215,7 @@ pub(crate) fn walk_collect_files(
         let mut item = FileItem::new_raw(basename_offset as u16, size, modified, None, is_binary);
         item.mark_definition_language(basename);
 
-        let mut guard = collected.lock();
-        guard.0.push((item, relative_path, modified_ns));
-        let n = guard.0.len();
-        drop(guard);
-
-        if n % PROGRESS_STEP == 0 {
-            synced_files_count.store(n, Ordering::Relaxed);
-        }
-
-        WalkState::Continue
+        push_pair(item, relative_path, modified_ns)
     }) {
         Ok(outcome) => outcome,
         Err(e) => {
@@ -233,5 +241,6 @@ pub(crate) fn walk_collect_files(
         pairs,
         dirs,
         ignore_rules,
+        truncated: stopped.load(Ordering::Relaxed),
     })
 }

@@ -1,4 +1,4 @@
-use super::walk_collect_files;
+use super::{WalkLimits, walk_collect_files};
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -30,8 +30,17 @@ fn collects_symlinks_like_regular_files_and_dirs() {
 
     let counter = Arc::new(AtomicUsize::new(0));
     // follow_symlinks=false — symlinks must still be visible.
-    let out =
-        walk_collect_files(root, false, false, 1, &counter, &Default::default(), None).unwrap();
+    let out = walk_collect_files(
+        root,
+        false,
+        false,
+        1,
+        &counter,
+        &Default::default(),
+        None,
+        WalkLimits::unlimited(),
+    )
+    .unwrap();
     let names: Vec<String> = out.pairs.iter().map(|(_, rel, _)| rel.clone()).collect();
 
     if file_link_created {

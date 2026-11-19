@@ -852,6 +852,8 @@ fn index_new_directory(
         &Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         ignore_options,
         scope,
+        // Directory indexing has no cap and no signal of its own to stop it.
+        crate::walk::WalkLimits::unlimited(),
     ) {
         Ok(walk) => walk,
         Err(e) => {
