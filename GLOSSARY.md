@@ -50,6 +50,10 @@ to the bytes. The verdict is part of the Content index, it decides whether grep
 may read that file at all, and the name-based side of it is a fast first answer
 that a later read may still turn binary.
 
+The binary table is built in and only ever grows: an operator may add
+extensions to it at startup, and nothing removes one. The text table stays
+closed, because text read as binary is a silently missed match.
+
 _Not_: ignored file (a binary is indexed, not skipped). A file extension is one
 source of the verdict, not the verdict itself.
 

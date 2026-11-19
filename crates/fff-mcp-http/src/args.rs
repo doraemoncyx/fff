@@ -149,6 +149,13 @@ pub struct Args {
     pub root_cap_files: Option<usize>,
 
     #[arg(
+        long = "extra-binary-extension",
+        value_name = "EXT",
+        help = "Extension to judge binary by name, repeatable; adds to the built-in table, never replaces it"
+    )]
+    pub extra_binary_extension: Vec<String>,
+
+    #[arg(
         long,
         value_name = "PATH",
         help = "Log path hint; each launch writes <stem>+<timestamp>+<pid>.log (default: <state dir>/fff/)"
@@ -256,6 +263,9 @@ impl Args {
         if let Some(files) = self.root_cap_files {
             config.root_cap_files = files;
         }
+        config
+            .extra_binary_extensions
+            .extend(self.extra_binary_extension);
         if let Some(path) = self.log_file {
             config.log_file = Some(path);
         }
@@ -404,6 +414,26 @@ mod tests {
             .unwrap_or_else(|| panic!("--root-cap-files is missing"));
         assert!(help.contains("500000"), "no default: {help}");
         assert!(help.contains("0 = no cap"), "no off switch: {help}");
+    }
+
+    #[test]
+    fn the_extra_binary_extension_flag_repeats_into_config() {
+        let config = Args::parse_from([
+            "fff-mcp-http",
+            "--extra-binary-extension",
+            "mtl",
+            "--extra-binary-extension",
+            ".ATLAS",
+        ])
+        .into_config()
+        .unwrap();
+        assert_eq!(
+            config.extra_binary_extensions,
+            vec!["mtl".to_string(), ".ATLAS".to_string()]
+        );
+
+        let plain = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert!(plain.extra_binary_extensions.is_empty());
     }
 
     #[test]

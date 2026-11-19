@@ -168,25 +168,40 @@ fn extra_binary() -> &'static [String] {
 }
 
 // Adds operator extensions to the binary table and returns the merged size:
-// additive only, so nothing can remove a built-in entry. Values are trimmed,
-// dot-stripped, lowercased and deduped; an empty value or one that still holds
-// a dot or a path separator is an error naming that value. First call wins.
+// additive only, so nothing removes a built-in entry. Values are trimmed,
+// dot-stripped, lowercased and deduped; anything else is an error naming the
+// value, text extensions included. First call wins.
 pub fn add_extra_binary_extensions<S: AsRef<str>>(exts: &[S]) -> Result<usize, String> {
     let mut merged: Vec<String> = Vec::with_capacity(exts.len());
     for raw in exts {
         let value = raw.as_ref();
         let ext = value.trim().trim_start_matches('.').to_ascii_lowercase();
-        if ext.is_empty() || ext.contains(['.', '/', '\\', ' ']) {
-            return Err(value.to_string());
+        if !is_bare_extension(&ext) {
+            return Err(format!(
+                "{value:?} is not a bare file extension: start with a letter or digit, then letters, \
+                 digits, '-', '_', '+' or '~'"
+            ));
         }
-        // A built-in entry already answers for its extension, and repeats are
-        // one item, not two.
+        // Text read as binary is a silently missed grep match, so that table stays closed.
+        if lookup(TEXT_EXTENSIONS, &ext) {
+            return Err(format!(
+                "{value:?} is on the text table: classifying text as binary would silently lose \
+                 content matches"
+            ));
+        }
+        // A built-in entry already answers for its extension, and repeats are one item.
         if !lookup(BINARY_EXTENSIONS, &ext) && !merged.contains(&ext) {
             merged.push(ext);
         }
     }
     let _ = EXTRA_BINARY.set(merged.into_boxed_slice());
     Ok(BINARY_EXTENSIONS.len() + extra_binary().len())
+}
+
+fn is_bare_extension(ext: &str) -> bool {
+    let mut chars = ext.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '~'))
 }
 
 #[cfg(test)]
@@ -327,12 +342,61 @@ mod tests {
 
     #[test]
     fn a_bad_configured_extension_names_itself() {
-        for bad in ["", "  ", "tar.gz", "a/b", "c:\\x"] {
-            assert_eq!(
-                add_extra_binary_extensions(&[bad]).unwrap_err(),
-                bad,
-                "{bad:?} must be reported verbatim"
-            );
+        for bad in ["", "  ", "tar.gz", "a/b", "c:\\x", ".", "a b"] {
+            let message = add_extra_binary_extensions(&[bad]).unwrap_err();
+            assert!(message.contains(&format!("{bad:?}")), "{message}");
         }
+    }
+
+    // No spelling removes an entry: a removal prefix is not an extension, and
+    // the text table refuses rather than reclassifies.
+    #[test]
+    fn removals_and_text_extensions_are_refused() {
+        for attempt in ["!png", "-png", "*", "!all"] {
+            let message = add_extra_binary_extensions(&[attempt]).unwrap_err();
+            assert!(message.contains("not a bare file extension"), "{message}");
+        }
+        for text in ["rs", ".RS", "md", "svg"] {
+            let message = add_extra_binary_extensions(&[text]).unwrap_err();
+            assert!(message.contains("text table"), "{message}");
+        }
+    }
+
+    // An empty list is the built-in table, and no extra list demotes an entry.
+    #[test]
+    fn extras_only_add_binary_and_never_remove() {
+        let extras = vec!["mtl".to_string(), "atlas".to_string()];
+        for list in [Vec::new(), extras.clone()] {
+            for ext in BINARY_EXTENSIONS {
+                assert!(
+                    extension_verdict_with(&format!("x.{ext}"), &list).names_binary(),
+                    "{ext} with {list:?}"
+                );
+            }
+            for ext in TEXT_EXTENSIONS {
+                assert_eq!(
+                    extension_verdict_with(&format!("x.{ext}"), &list),
+                    ExtensionVerdict::Text,
+                    "{ext} with {list:?}"
+                );
+            }
+            for ext in MIXED_USE_EXTENSIONS {
+                assert_eq!(
+                    extension_verdict_with(&format!("x.{ext}"), &list),
+                    ExtensionVerdict::MixedUse,
+                    "{ext} left the byte path"
+                );
+            }
+        }
+        // Only the extra list answers for these, and the verdict is the name's:
+        // neither path here was ever opened.
+        assert_eq!(
+            extension_verdict_with("x.mtl", &extras),
+            ExtensionVerdict::Binary
+        );
+        assert_eq!(
+            extension_verdict_with("x.mtl", &[]),
+            ExtensionVerdict::Unknown
+        );
     }
 }

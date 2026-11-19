@@ -67,6 +67,17 @@ pub fn spawn_with_probe(
         .ignore_options()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
 
+    // The binary table is process-wide and fixed before any Root is walked.
+    let merged_extensions = config
+        .apply_binary_extensions()
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+    tracing::info!(
+        builtin = fff::binary_verdict::BINARY_EXTENSIONS.len(),
+        merged = merged_extensions,
+        configured = config.extra_binary_extensions.len(),
+        "binary extension table"
+    );
+
     let address = SocketAddr::new(config.bind, config.port);
     let listener = TcpListener::bind(address).map_err(|error| {
         std::io::Error::new(error.kind(), format!("cannot bind {address}: {error}"))

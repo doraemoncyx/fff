@@ -268,6 +268,26 @@ walk each time it becomes a Root.
 Root and the count — the numbers to judge 500,000 by. A Root that is already
 indexed is never re-gated; the cap decides whether a directory becomes a Root.
 
+## Binary extensions
+
+`--extra-binary-extension <EXT>` (repeatable) and the `extra_binary_extensions`
+TOML list add extensions to the built-in binary table, for the resource formats
+of one machine (`.mtl`, `.mha`, `.atlas`) that the table does not know. An added
+extension is a Binary verdict by name: such files are never opened to decide,
+and grep skips them without reading a byte.
+
+The list adds, it never replaces: no value removes a built-in entry and there is
+no switch to empty the table. Values are trimmed, a leading dot is dropped, case
+is folded and repeats are one entry, so `mtl`, `.MTL` and ` mtl ` are one
+extension. A value that is not a bare extension (`tar.gz`, a path, `!png`) or
+that names a text extension (`.rs`, `.md`) fails the startup with an
+`extra_binary_extensions: …` message instead of being ignored — text read as
+binary is a silently missed grep match.
+
+The startup log line `binary extension table` carries `builtin` and `merged`
+counts, so "did my extension take effect" is one look at the log. The table is
+fixed for the process; a change needs a restart.
+
 ## Skipping files
 
 Built-in skips: `.svn/`, `.hg/`, `CVS/`. Disable with `--no-default-skips`;
@@ -304,8 +324,8 @@ file (DNS-rebinding protection).
 
 ## Configuration file
 
-`--config <path>` accepts a TOML file; command-line flags win, and `skip`
-lists are merged.
+`--config <path>` accepts a TOML file; command-line flags win, and `skip` and
+`extra_binary_extensions` lists are merged.
 
 ```toml
 skip = ["*.bak", "cache/"]
@@ -332,6 +352,7 @@ no_snapshot = false
 snapshot_budget_mb = 512
 snapshot_reset = false
 root_cap_files = 500000
+extra_binary_extensions = ["mtl", "atlas"]
 ```
 
 ## Lifecycle

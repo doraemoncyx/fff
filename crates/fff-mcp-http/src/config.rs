@@ -58,6 +58,8 @@ pub struct Config {
     pub snapshot_reset: bool,
     /// Files a tardir may hold before it is refused as a Root; `0` means no cap.
     pub root_cap_files: usize,
+    /// Extensions added to the built-in binary table at startup; never a replacement.
+    pub extra_binary_extensions: Vec<String>,
     /// Test-only: expose `POST /test/evict`.
     pub test_hook: bool,
 }
@@ -90,6 +92,7 @@ impl Default for Config {
             snapshot_budget_mb: DEFAULT_SNAPSHOT_BUDGET_MB,
             snapshot_reset: false,
             root_cap_files: DEFAULT_ROOT_CAP_FILES,
+            extra_binary_extensions: Vec::new(),
             test_hook: false,
         }
     }
@@ -152,6 +155,12 @@ impl Config {
         rules
     }
 
+    /// Adds the configured extensions to the built-in binary table; merged size.
+    pub fn apply_binary_extensions(&self) -> Result<usize, String> {
+        fff::binary_verdict::add_extra_binary_extensions(&self.extra_binary_extensions)
+            .map_err(|message| format!("extra_binary_extensions: {message}"))
+    }
+
     /// Skip rules plus git/ignore-file switches, ready for a walker.
     pub fn ignore_options(&self) -> Result<FilePickerIgnoreOptions, String> {
         let rules: Arc<[String]> = self.skip_rules().into();
@@ -207,6 +216,7 @@ struct ConfigFile {
     snapshot_budget_mb: Option<u64>,
     snapshot_reset: Option<bool>,
     root_cap_files: Option<usize>,
+    extra_binary_extensions: Option<Vec<String>>,
 }
 
 impl ConfigFile {
@@ -285,6 +295,9 @@ impl ConfigFile {
         }
         if let Some(files) = self.root_cap_files {
             config.root_cap_files = files;
+        }
+        if let Some(exts) = self.extra_binary_extensions {
+            config.extra_binary_extensions.extend(exts);
         }
         Ok(())
     }
@@ -474,6 +487,38 @@ mod tests {
         assert_eq!(Config::from_file(&path).unwrap().root_cap_files, 25);
         std::fs::write(&path, "root_cap_files = 0\n").unwrap();
         assert_eq!(Config::from_file(&path).unwrap().root_cap_files, 0);
+    }
+
+    #[test]
+    fn config_file_sets_the_extra_binary_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.toml");
+        assert!(Config::default().extra_binary_extensions.is_empty());
+        std::fs::write(&path, "extra_binary_extensions = [\"mtl\", \".ATLAS\"]\n").unwrap();
+        assert_eq!(
+            Config::from_file(&path).unwrap().extra_binary_extensions,
+            vec!["mtl".to_string(), ".ATLAS".to_string()]
+        );
+    }
+
+    // A bad value fails the startup, naming both the field and the value. This
+    // leaves the process table untouched, so the test is order-free.
+    #[test]
+    fn a_bad_extra_binary_extension_names_the_field() {
+        let bad = Config {
+            extra_binary_extensions: vec!["tar.gz".into()],
+            ..Config::default()
+        };
+        let message = bad.apply_binary_extensions().unwrap_err();
+        assert!(message.starts_with("extra_binary_extensions:"), "{message}");
+        assert!(message.contains("tar.gz"), "{message}");
+
+        let text = Config {
+            extra_binary_extensions: vec!["rs".into()],
+            ..Config::default()
+        };
+        let message = text.apply_binary_extensions().unwrap_err();
+        assert!(message.contains("text table"), "{message}");
     }
 
     #[test]
