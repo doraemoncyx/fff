@@ -10,6 +10,19 @@ key. A Root is the identity of an Index. Two spellings of the same directory
 
 _Not_: base path, workspace, project.
 
+## Root cap
+
+The most files a directory may hold and still become a Root: 500,000 by
+default, configurable, and `0` for no cap. It is not a scan limit and not a
+serve limit — a tardir that would cross it never becomes a Root at all, so it
+gets no Index, no watcher and no Snapshot row, and the request that named it is
+refused with the cap, the count at the crossing and the directory's top-level
+subdirectories to retry under. A cap a caller can raise is not a cap, so no
+request may override it.
+
+_Not_: walk limit (the walker's own stop, a different number), memory budget,
+skip rules.
+
 ## Index
 
 Everything the service holds for one Root: the file and directory tables produced
@@ -74,7 +87,8 @@ _Not_: outdated, dirty, expired.
 
 The path named by a single request: a directory, or one file. A tardir is not
 necessarily a Root: it is only a Root when an Index happens to exist for exactly
-that directory.
+that directory. A tardir over the Root cap never becomes a Root — the request
+is refused instead.
 
 _Not_: target, scope, query dir.
 

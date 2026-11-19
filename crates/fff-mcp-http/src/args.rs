@@ -143,6 +143,13 @@ pub struct Args {
 
     #[arg(
         long,
+        value_name = "N",
+        help = "Files a tardir may hold before it is refused as a Root, 0 = no cap (default: 500000)"
+    )]
+    pub root_cap_files: Option<usize>,
+
+    #[arg(
+        long,
         value_name = "PATH",
         help = "Log path hint; each launch writes <stem>+<timestamp>+<pid>.log (default: <state dir>/fff/)"
     )]
@@ -246,6 +253,9 @@ impl Args {
         if self.snapshot_reset {
             config.snapshot_reset = true;
         }
+        if let Some(files) = self.root_cap_files {
+            config.root_cap_files = files;
+        }
         if let Some(path) = self.log_file {
             config.log_file = Some(path);
         }
@@ -326,7 +336,7 @@ mod tests {
     use super::*;
     use crate::config::{
         DEFAULT_CONCURRENT_SCANS, DEFAULT_EVICT_INTERVAL_SECS, DEFAULT_IDLE_TIMEOUT_SECS,
-        DEFAULT_PORT, DEFAULT_SCAN_WAIT_SECS, DEFAULT_SNAPSHOT_BUDGET_MB,
+        DEFAULT_PORT, DEFAULT_ROOT_CAP_FILES, DEFAULT_SCAN_WAIT_SECS, DEFAULT_SNAPSHOT_BUDGET_MB,
     };
 
     #[test]
@@ -381,6 +391,35 @@ mod tests {
             budget.contains("512"),
             "--snapshot-budget-mb hides its default: {budget}"
         );
+    }
+
+    #[test]
+    fn the_root_cap_flag_states_its_unit_and_default() {
+        use clap::CommandFactory;
+        let help = Args::command()
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some("root-cap-files"))
+            .and_then(|arg| arg.get_help())
+            .map(|help| help.to_string())
+            .unwrap_or_else(|| panic!("--root-cap-files is missing"));
+        assert!(help.contains("500000"), "no default: {help}");
+        assert!(help.contains("0 = no cap"), "no off switch: {help}");
+    }
+
+    #[test]
+    fn the_root_cap_flag_parses_into_config() {
+        let capped = Args::parse_from(["fff-mcp-http", "--root-cap-files", "25"])
+            .into_config()
+            .unwrap();
+        assert_eq!(capped.root_cap_files, 25);
+
+        let unlimited = Args::parse_from(["fff-mcp-http", "--root-cap-files", "0"])
+            .into_config()
+            .unwrap();
+        assert_eq!(unlimited.root_cap_files, 0);
+
+        let default = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert_eq!(default.root_cap_files, DEFAULT_ROOT_CAP_FILES);
     }
 
     #[test]

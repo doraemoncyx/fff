@@ -37,6 +37,8 @@ pub struct Registry {
     last_activity: AtomicU64,
     probe: Arc<dyn MemoryProbe>,
     evicted_at: Mutex<HashMap<String, u64>>,
+    // Tardirs the Root cap turned away, counted per attempt.
+    refused_roots: AtomicU64,
 }
 
 impl Registry {
@@ -85,6 +87,7 @@ impl Registry {
             last_activity: AtomicU64::new(now_millis()),
             probe,
             evicted_at: Mutex::new(HashMap::new()),
+            refused_roots: AtomicU64::new(0),
         })
     }
 
@@ -115,6 +118,10 @@ impl Registry {
 
     pub(crate) fn peak_scans_in_flight(&self) -> usize {
         self.scans.peak()
+    }
+
+    pub(crate) fn refused_roots(&self) -> u64 {
+        self.refused_roots.load(Ordering::Relaxed)
     }
 
     pub(crate) fn store_cursor(&self, offset: usize) -> String {
@@ -188,6 +195,14 @@ impl Registry {
         slot: &Arc<ScanSlot>,
         deadline: Instant,
     ) -> Result<Option<Arc<Index>>, ApiError> {
+        // A tardir over the cap never becomes a Root: the check runs before the
+        // permit, so a refused root takes no scan slot and no walk of its own.
+        if let Err(error) = self.admit_root(tardir) {
+            self.forget_slot(key, slot);
+            slot.fail(error.message().to_string());
+            return Err(error);
+        }
+
         let Some(permit) = self.scans.acquire_until(deadline) else {
             // The caller answers from partial results now; the Root still needs
             // its first scan, so the tick retries once a permit frees up.
@@ -222,6 +237,24 @@ impl Registry {
         slot.publish(Arc::clone(&index));
         self.forget_slot(key, slot);
         Ok(Some(index))
+    }
+
+    // The Root cap, as a gate: `Err` means nothing is indexed, watched or written.
+    fn admit_root(&self, tardir: &Path) -> Result<(), ApiError> {
+        let cap = self.config.root_cap_files;
+        let Some(refusal) =
+            fff::root_cap::refusal(tardir, cap, self.config.follow_symlinks, &self.ignore)
+        else {
+            return Ok(());
+        };
+        self.refused_roots.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            root = %tardir.display(),
+            files = refusal.counted,
+            cap = refusal.cap,
+            "refused a tardir over the Root cap"
+        );
+        Err(crate::root::cap_error(tardir, &refusal))
     }
 
     // Drop the map entry only while it still points at `slot`.

@@ -16,6 +16,7 @@ pub const DEFAULT_CONCURRENT_SCANS: usize = 2;
 pub const DEFAULT_EVICT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_SNAPSHOT_BUDGET_MB: u64 = 512;
+pub const DEFAULT_ROOT_CAP_FILES: usize = 500_000;
 
 // rmcp's own loopback allowlist; config entries are added to it.
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
@@ -55,6 +56,8 @@ pub struct Config {
     pub snapshot_budget_mb: u64,
     /// Empty the Snapshot environment before opening it.
     pub snapshot_reset: bool,
+    /// Files a tardir may hold before it is refused as a Root; `0` means no cap.
+    pub root_cap_files: usize,
     /// Test-only: expose `POST /test/evict`.
     pub test_hook: bool,
 }
@@ -86,6 +89,7 @@ impl Default for Config {
             snapshot_db: None,
             snapshot_budget_mb: DEFAULT_SNAPSHOT_BUDGET_MB,
             snapshot_reset: false,
+            root_cap_files: DEFAULT_ROOT_CAP_FILES,
             test_hook: false,
         }
     }
@@ -202,6 +206,7 @@ struct ConfigFile {
     no_snapshot: Option<bool>,
     snapshot_budget_mb: Option<u64>,
     snapshot_reset: Option<bool>,
+    root_cap_files: Option<usize>,
 }
 
 impl ConfigFile {
@@ -277,6 +282,9 @@ impl ConfigFile {
         }
         if let Some(reset) = self.snapshot_reset {
             config.snapshot_reset = reset;
+        }
+        if let Some(files) = self.root_cap_files {
+            config.root_cap_files = files;
         }
         Ok(())
     }
@@ -455,6 +463,17 @@ mod tests {
         assert!(!config.snapshot);
         assert_eq!(config.snapshot_budget_mb, 32);
         assert!(config.snapshot_path().is_none());
+    }
+
+    #[test]
+    fn config_file_sets_the_root_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("root_cap.toml");
+        assert_eq!(Config::default().root_cap_files, DEFAULT_ROOT_CAP_FILES);
+        std::fs::write(&path, "root_cap_files = 25\n").unwrap();
+        assert_eq!(Config::from_file(&path).unwrap().root_cap_files, 25);
+        std::fs::write(&path, "root_cap_files = 0\n").unwrap();
+        assert_eq!(Config::from_file(&path).unwrap().root_cap_files, 0);
     }
 
     #[test]

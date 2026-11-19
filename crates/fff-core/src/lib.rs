@@ -110,6 +110,9 @@ pub use shared::*;
 /// The Binary verdict's extension tables, and the additive operator list.
 pub mod binary_verdict;
 
+/// The file cap that keeps an oversized directory from becoming a Root.
+pub mod root_cap;
+
 /// Core file picker single thread: filesystem indexing, background watching, and fuzzy search.
 /// See [`FilePicker`](file_picker::FilePicker) for the main entry point.
 pub mod file_picker;

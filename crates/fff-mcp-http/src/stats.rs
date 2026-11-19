@@ -10,6 +10,8 @@ pub struct StatsResponse {
     pub scans_started: u64,
     pub scans_in_flight: usize,
     pub peak_scans_in_flight: usize,
+    /// Tardirs the Root cap refused since this process started.
+    pub refused_roots: u64,
     /// Whether Indexes build the bigram content index used as grep's prefilter.
     pub content_indexing: bool,
     /// `None` when no Snapshot is in use: off by config, unopenable, or latched
@@ -78,6 +80,7 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
         scans_started: registry.scans_started(),
         scans_in_flight: registry.scans_in_flight(),
         peak_scans_in_flight: registry.peak_scans_in_flight(),
+        refused_roots: registry.refused_roots(),
         content_indexing: registry.config().content_indexing,
         snapshot: registry.snapshot_store().map(|store| {
             let writer = store.writer_stats();

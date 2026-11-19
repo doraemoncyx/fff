@@ -132,7 +132,8 @@ least recently requested Root is dropped, at most three per round, never one
 serving the current request, and never the last one. A single Root larger than
 the whole budget is kept with a warning rather than thrashing.
 
-`/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`, and per-Index
+`/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`,
+`refused_roots`, and per-Index
 `root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
 `estimated_bytes`, ordered by least recently used. `snapshot` holds the disk
 cache's `hits`/`misses`/`bytes`/`roots` and its `map_bytes`/`map_ceiling`/
@@ -245,6 +246,28 @@ rest queue. A request waits at most `--scan-wait-secs` (default 20) and then
 answers with whatever is indexed so far. Concurrent requests for the same
 tardir share one scan.
 
+## Root cap
+
+`--root-cap-files <N>` (default `500000`, `0` = no cap) bounds how big a
+directory may be and still become a Root. A tardir that would cross the cap is
+not indexed at all: the walk stops at the crossing, so no Index, no watcher and
+no Snapshot row is ever created for it, and the request fails with
+`INVALID_PARAMS` naming the cap, the file count the walk stopped at, and that
+directory's top-level subdirectories — the candidates for a narrower retry.
+
+A request cannot raise the cap: `path`, `paths` and `globs` narrow a tardir,
+they never rescue one, so a request naming several sub-paths of a refused
+directory fails as a whole instead of answering for the parts that fit.
+
+The check is a walk of its own, capped the same way and run before an Index
+exists or a scan slot is taken. Refusing a 2M-file tree therefore costs one walk
+up to the cap, not a scan of the tree; an under-cap directory pays one extra
+walk each time it becomes a Root.
+
+`/stats` reports `refused_roots`, and each refusal logs one `warn` line with the
+Root and the count — the numbers to judge 500,000 by. A Root that is already
+indexed is never re-gated; the cap decides whether a directory becomes a Root.
+
 ## Skipping files
 
 Built-in skips: `.svn/`, `.hg/`, `CVS/`. Disable with `--no-default-skips`;
@@ -308,6 +331,7 @@ snapshot_db = "C:/Users/me/AppData/Local/fff/snapshot-db"
 no_snapshot = false
 snapshot_budget_mb = 512
 snapshot_reset = false
+root_cap_files = 500000
 ```
 
 ## Lifecycle
