@@ -98,7 +98,7 @@ impl VerdictCounts {
 
 // The extension of the last path component, `Path::extension()` semantics:
 // a dotfile with no other dot has none.
-fn extension_of(name: &str) -> Option<&str> {
+pub(crate) fn extension_of(name: &str) -> Option<&str> {
     let base = name.rsplit_once(['/', '\\']).map_or(name, |(_, tail)| tail);
     let (stem, ext) = base.rsplit_once('.')?;
     (!stem.is_empty() && !ext.is_empty()).then_some(ext)

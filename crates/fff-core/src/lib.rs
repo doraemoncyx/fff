@@ -113,6 +113,9 @@ pub mod binary_verdict;
 /// The file cap that keeps an oversized directory from becoming a Root.
 pub mod root_cap;
 
+/// Reads a Root's recorded Binary verdicts back out of its Snapshot.
+pub mod verdict_audit;
+
 /// Core file picker single thread: filesystem indexing, background watching, and fuzzy search.
 /// See [`FilePicker`](file_picker::FilePicker) for the main entry point.
 pub mod file_picker;

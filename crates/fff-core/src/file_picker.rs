@@ -2529,20 +2529,12 @@ impl FileSync {
 const MAX_EXPANDED_FILES: usize = 50_000;
 const MAX_EXPAND_DEPTH: usize = 32;
 
-/// Make files inside symlinked directories searchable regardless of the walker
-/// backend / `follow_symlinks` setting.
-///
-/// The walkers emit `SYMLINK_DIR` markers for symlink→dir entries but (by
-/// default) do not descend into them — and the zlob Windows backend can't
-/// follow symlinks at all. This pass walks each symlink's target recursively
-/// and adds the files under the symlink's relative prefix, so `link/main.py`
-/// becomes searchable exactly like `real/main.py`.
-///
-/// Returns the number of files added.
-///
-/// Bounded by [`MAX_EXPANDED_FILES`] and [`MAX_EXPAND_DEPTH`]: a link into a
-/// resource tree would otherwise walk hundreds of thousands of entries.
-fn expand_symlink_dir_pairs(
+// Make files inside symlinked directories searchable regardless of the walker
+// backend / `follow_symlinks` setting: the walkers emit `SYMLINK_DIR` markers
+// for symlink→dir entries but do not descend into them, so this pass walks each
+// target recursively and adds files under the symlink's relative prefix.
+// Bounded by `MAX_EXPANDED_FILES` / `MAX_EXPAND_DEPTH`. Returns files added.
+pub(crate) fn expand_symlink_dir_pairs(
     base_path: &Path,
     pairs: &mut Vec<(FileItem, String, u64)>,
     is_git_repo: bool,
