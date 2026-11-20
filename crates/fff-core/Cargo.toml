@@ -92,7 +92,7 @@ page_size = "0.6"
 parking_lot = { workspace = true }
 pathdiff = { workspace = true }
 regex = { workspace = true }
-regex-syntax = "0.8"
+regex-syntax = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
