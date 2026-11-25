@@ -44,8 +44,12 @@ feature, `ripgrep` is the default.
 
 - Create e2e local test file for Neovim: Load any Lua test file with `nvim -l <test_file>`
 
-Two `watch::rescan_tests` tests fail on Windows with `PermissionDenied` (they
-need a real POSIX rename); they pass on CI.
+`OK (<mode>)` is the verdict. A green run still prints cargo's `failures:`
+block for the tests `$windowsOnlyFailures` in `tools/check.ps1` excuses; that
+list is the only enumeration. Outside it, the two `scan::tests` multi-process
+tests (`snapshot_process_worker`, `two_processes_indexing_one_root_leave_a_readable_snapshot`)
+lose a `ForeignSnapshotDir` race under parallel load and pass alone, so re-run
+them with `-Mode quick -Filter` before reading a red run as your change.
 
 ### Code Quality
 
