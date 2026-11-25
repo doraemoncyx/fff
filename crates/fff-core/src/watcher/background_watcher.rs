@@ -35,6 +35,8 @@ pub(crate) struct WatcherOptions {
     pub(crate) ignore_options: FilePickerIgnoreOptions,
     pub(crate) enable_fs_root_scanning: bool,
     pub(crate) enable_home_dir_scanning: bool,
+    // Off: no `.git` watch and no status refresh, only the index updates.
+    pub(crate) git_status: bool,
 }
 
 enum WatchTask {
@@ -204,6 +206,7 @@ impl BackgroundWatcher {
             .with_event_kinds(EventKindMask::CORE);
 
         let git_workdir_for_handler = git.as_ref().map(|git| git.workdir.clone());
+        let git_status_enabled = options.git_status;
         let base_path_for_handler = base_path.clone();
         let shared_picker_for_watching = shared_picker.clone();
         let file_picker = shared_picker.weaken();
@@ -306,10 +309,12 @@ impl BackgroundWatcher {
         // The .git directory is excluded from the file list but we still need
         // to observe changes that affect git status (staging, unstaging,
         // committing, branch switches, merges, etc)
-        watch_git_status_paths(
-            &mut debouncer,
-            git.as_ref().map(|git| git.git_dir.as_path()),
-        );
+        if git_status_enabled {
+            watch_git_status_paths(
+                &mut debouncer,
+                git.as_ref().map(|git| git.git_dir.as_path()),
+            );
+        }
 
         Ok(debouncer)
     }
@@ -461,7 +466,7 @@ pub(crate) fn handle_debounced_events(
                 // indexed; the stale rules heal on the next admitted rescan.
             }
 
-            if is_dotgit_change_affecting_status(path, &repo) {
+            if options.git_status && is_dotgit_change_affecting_status(path, &repo) {
                 need_full_git_rescan = true;
             }
 
@@ -805,7 +810,7 @@ pub(crate) fn handle_debounced_events(
 
     // do not try to update the paths if we anyway going to rescan everything from scratch
     // no repo => no consumer thread, so don't accumulate paths nobody will drain
-    if !index_update_rejected && repo.is_some() {
+    if options.git_status && !index_update_rejected && repo.is_some() {
         if need_full_git_rescan {
             // A full git rescan re-reads every tracked path (including ones that just
             // went clean after a commit), so it already subsumes the per-path update.
@@ -943,7 +948,7 @@ fn index_new_directory(
         watch_registry.dispatch(base_path, events);
     }
 
-    if !rescan_started && repo.is_some() {
+    if !rescan_started && repo.is_some() && options.git_status {
         git_status_worker.enqueue_paths(indexed_files);
     }
 

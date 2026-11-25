@@ -54,6 +54,7 @@ impl Index {
                 expand_symlink_dirs: config.expand_symlink_dirs,
                 enable_mmap_cache: false,
                 enable_content_indexing: config.content_indexing,
+                git_status: config.git_status,
                 snapshot_store: snapshot,
                 ..Default::default()
             },

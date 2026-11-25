@@ -192,6 +192,20 @@ pub struct Args {
     #[arg(long, help = "Ignore .ignore files")]
     pub no_ignore_files: bool,
 
+    #[arg(
+        long,
+        conflicts_with = "no_git_status",
+        help = "Read git status for dirty-file ranking (default: off)"
+    )]
+    pub git_status: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "git_status",
+        help = "Do not read git status; ignore rules still apply (default)"
+    )]
+    pub no_git_status: bool,
+
     #[arg(long, hide = true, help = "Test-only: expose POST /test/evict")]
     pub test_hook: bool,
 }
@@ -284,6 +298,12 @@ impl Args {
         }
         if self.no_ignore_files {
             config.disable_ignore_files = true;
+        }
+        if self.git_status {
+            config.git_status = true;
+        }
+        if self.no_git_status {
+            config.git_status = false;
         }
         if self.test_hook {
             config.test_hook = true;
@@ -566,6 +586,27 @@ mod tests {
             .into_config()
             .unwrap();
         assert!(forced.content_indexing);
+    }
+
+    #[test]
+    fn git_status_flags_parse_both_ways_and_conflict() {
+        let default = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert!(!default.git_status);
+
+        let on = Args::parse_from(["fff-mcp-http", "--git-status"])
+            .into_config()
+            .unwrap();
+        assert!(on.git_status);
+
+        let off = Args::parse_from(["fff-mcp-http", "--no-git-status"])
+            .into_config()
+            .unwrap();
+        assert!(!off.git_status);
+
+        assert!(
+            Args::try_parse_from(["fff-mcp-http", "--git-status", "--no-git-status"]).is_err(),
+            "both flags must be rejected"
+        );
     }
 
     #[test]

@@ -666,6 +666,9 @@ pub struct FilePickerOptions {
     /// Ranking boost for files that participated in recent commits of the
     /// current branch. Enabled with default limits unless overridden.
     pub git_recency: GitRecencyConfig,
+    /// Read git status (dirty files). Off means no status read, no
+    /// `GitStatusWorker` and no `.git` watcher; ignore rules are unaffected.
+    pub git_status: bool,
     /// Where scans persist their Snapshot rows. `None` (the default) writes
     /// nothing; nothing reads rows back yet.
     pub snapshot_store: Option<Arc<SnapshotStore>>,
@@ -685,6 +688,7 @@ impl Default for FilePickerOptions {
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,
             git_recency: GitRecencyConfig::default(),
+            git_status: true,
             snapshot_store: None,
         }
     }
@@ -723,6 +727,7 @@ pub struct FilePicker {
     enable_fs_root_scanning: bool,
     enable_home_dir_scanning: bool,
     git_recency_config: GitRecencyConfig,
+    git_status: bool,
     snapshot_store: Option<Arc<SnapshotStore>>,
     trace_span: tracing::Span,
     trace_id: String,
@@ -818,6 +823,10 @@ impl FilePicker {
 
     pub fn git_recency_config(&self) -> GitRecencyConfig {
         self.git_recency_config
+    }
+
+    pub fn git_status_enabled(&self) -> bool {
+        self.git_status
     }
 
     pub fn trace_id(&self) -> &str {
@@ -1090,6 +1099,7 @@ impl FilePicker {
             enable_fs_root_scanning: options.enable_fs_root_scanning,
             enable_home_dir_scanning: options.enable_home_dir_scanning,
             git_recency_config: options.git_recency,
+            git_status: options.git_status,
             snapshot_store: options.snapshot_store,
             trace_span,
             trace_id,
@@ -1157,6 +1167,7 @@ impl FilePicker {
         let expand_symlink_dirs = picker.expand_symlink_dirs;
         let enable_fs_root_scanning = picker.enable_fs_root_scanning;
         let enable_home_dir_scanning = picker.enable_home_dir_scanning;
+        let git_status = picker.git_status_enabled();
         let snapshot_store = picker.snapshot_store();
 
         let signals = picker.scan_signals();
@@ -1202,6 +1213,7 @@ impl FilePicker {
                 ignore_options,
                 enable_fs_root_scanning,
                 enable_home_dir_scanning,
+                git_status,
                 snapshot_store,
             },
         )
@@ -1225,6 +1237,7 @@ impl FilePicker {
         let git = FileSync::discover_git(&self.base_path, self.ignore_options.disable_git);
         let git_handle = git
             .as_ref()
+            .filter(|_| self.git_status)
             .map(|git| FileSync::spawn_git_status(git.workdir.clone()));
 
         let empty_frecency = SharedFrecency::default();

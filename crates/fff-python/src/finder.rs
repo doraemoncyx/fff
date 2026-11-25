@@ -257,6 +257,7 @@ impl FileFinder {
                     enable_fs_root_scanning,
                     enable_home_dir_scanning,
                     git_recency: Default::default(),
+                    git_status: true,
                     snapshot_store: None,
                 },
             )
@@ -881,6 +882,7 @@ impl FileFinder {
                     enable_fs_root_scanning: fs_root,
                     enable_home_dir_scanning: home_dir,
                     git_recency,
+                    git_status: true,
                     snapshot_store: None,
                 },
             )

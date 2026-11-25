@@ -302,6 +302,20 @@ restart (or a different tardir) to rescan an existing Root.
 All of the above require the `zlob` walker; a ripgrep-only build refuses to
 start with skip options rather than silently indexing everything.
 
+## Git status
+
+`git_status` (TOML) / `--git-status` reads each Root's dirty files so they can
+outrank clean ones; `--no-git-status` turns it off and is the default. Off, a
+scan reads no status, no `GitStatusWorker` thread starts, and the watcher does
+not subscribe to `.git` — so nothing in the log, no `refresh_git_status` span
+and no per-event `read_status` for any Root.
+
+The trade is ranking only: **the set of files a query returns is identical**,
+a dirty file just no longer gets its boost. `git:` / `status:` query filters
+have nothing to read when it is off, so they match no file. Ignore rules are
+untouched — `.gitignore` / `.ignore` skipping belongs to `disable_git` and
+`disable_ignore_files`, which stay independent of this switch.
+
 ## Symlinked directories
 
 Files inside a symlinked directory are indexed even with `--follow-symlinks`
@@ -348,6 +362,7 @@ log_level = "info"
 default_skips = true
 disable_git = false
 disable_ignore_files = false
+git_status = false
 idle_timeout_secs = 3600
 allowed_hosts = ["build-box.local"]
 snapshot_db = "C:/Users/me/AppData/Local/fff/snapshot-db"

@@ -1560,6 +1560,48 @@ mod tests {
     }
 
     #[test]
+    fn dirty_git_status_only_reorders_the_same_set_of_files() {
+        let pair = |dirty_status: Option<git2::Status>| {
+            let mut dirty = FileItem::new_raw(0, 0, 0, dirty_status, false);
+            dirty.access_frecency_score = 10;
+            let mut clean = FileItem::new_raw(0, 0, 0, None, false);
+            clean.access_frecency_score = 10;
+            [dirty, clean]
+        };
+        let parser = QueryParser::default();
+        let query = parser.parse("");
+        let context = ScoringContext {
+            query: &query,
+            max_threads: 1,
+            max_typos: 0,
+            project_path: None,
+            current_file: None,
+            last_same_query_match: None,
+            combo_boost_score_multiplier: 0,
+            min_combo_count: 0,
+            pagination: PaginationArgs {
+                offset: 0,
+                limit: 10,
+            },
+        };
+
+        let with_status = pair(Some(git2::Status::WT_MODIFIED));
+        let scored = frecency_scores(&FileItems::All(&with_status), &context, ArenaPtr::null());
+        assert_eq!(scored.len(), with_status.len());
+        assert_eq!(scored[0].1.total, scored[1].1.total + 1);
+        assert_eq!(scored[0].1.git_status_boost, 1);
+        assert_eq!(scored[1].1.git_status_boost, 0);
+
+        // No status read leaves both files at the same total: the set is
+        // unchanged, only the dirty file's extra point goes away.
+        let without_status = pair(None);
+        let plain = frecency_scores(&FileItems::All(&without_status), &context, ArenaPtr::null());
+        assert_eq!(plain.len(), with_status.len());
+        assert_eq!(plain[0].1.total, plain[1].1.total);
+        assert!(plain.iter().all(|(_, score)| score.git_status_boost == 0));
+    }
+
+    #[test]
     fn merge_offsets_reuses_storage() {
         let mut ranges: SmallVec<[(u32, u32); 4]> = smallvec::smallvec![
             (20, 25),

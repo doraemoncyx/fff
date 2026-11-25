@@ -46,6 +46,9 @@ pub(crate) struct ScanConfig {
     pub(crate) ignore_options: FilePickerIgnoreOptions,
     pub(crate) enable_fs_root_scanning: bool,
     pub(crate) enable_home_dir_scanning: bool,
+    // Read git status: the initial read and the background worker. Off leaves
+    // ignore rules intact, only the dirty-file scoring signal is dropped.
+    pub(crate) git_status: bool,
     // `None` means scans leave no Snapshot on disk and behave exactly as before.
     pub(crate) snapshot_store: Option<Arc<SnapshotStore>>,
 }
@@ -103,6 +106,7 @@ impl ScanJob {
             ignore_options: picker.ignore_options().clone(),
             enable_fs_root_scanning: picker.fs_root_scanning_enabled(),
             enable_home_dir_scanning: picker.home_dir_scanning_enabled(),
+            git_status: picker.git_status_enabled(),
             snapshot_store: picker.snapshot_store(),
         };
 
@@ -226,7 +230,7 @@ impl ScanJob {
 
         // Spawn the git status worker once. BUG PINNNING. If the user initiated git in the folder
         // which is a real use case we need to have a way to start the git worker background thread dynamically
-        if git.is_some() && !signals.cancelled.load(Ordering::Acquire) {
+        if config.git_status && git.is_some() && !signals.cancelled.load(Ordering::Acquire) {
             git_status_worker.spawn_once(shared_picker.weaken(), shared_frecency.clone());
             git_status_worker.request_full_rescan(); // this runs anyway
         }
@@ -290,6 +294,7 @@ impl ScanJob {
                     ignore_options: config.ignore_options,
                     enable_fs_root_scanning: config.enable_fs_root_scanning,
                     enable_home_dir_scanning: config.enable_home_dir_scanning,
+                    git_status: config.git_status,
                 },
                 git_status_worker,
                 tracing::Span::current(),
@@ -733,6 +738,7 @@ mod tests {
             ignore_options: Default::default(),
             enable_fs_root_scanning: false,
             enable_home_dir_scanning: false,
+            git_status: false,
             snapshot_store: None,
         };
         ScanJob::run_post_scan(&shared, &signals, &config, &snapshot, &[]);

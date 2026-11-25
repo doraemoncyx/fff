@@ -47,6 +47,8 @@ pub struct Config {
     pub default_skips: bool,
     pub disable_git: bool,
     pub disable_ignore_files: bool,
+    /// Read git status for dirty-file ranking; `--git-status` on, default off.
+    pub git_status: bool,
     pub allowed_hosts: Vec<String>,
     /// Keep a Snapshot of each Root's Content index; `--no-snapshot` turns it off.
     pub snapshot: bool,
@@ -86,6 +88,7 @@ impl Default for Config {
             default_skips: true,
             disable_git: false,
             disable_ignore_files: false,
+            git_status: false,
             allowed_hosts: Vec::new(),
             snapshot: true,
             snapshot_db: None,
@@ -209,6 +212,7 @@ struct ConfigFile {
     default_skips: Option<bool>,
     disable_git: Option<bool>,
     disable_ignore_files: Option<bool>,
+    git_status: Option<bool>,
     idle_timeout_secs: Option<u64>,
     allowed_hosts: Option<Vec<String>>,
     snapshot_db: Option<PathBuf>,
@@ -274,6 +278,9 @@ impl ConfigFile {
         }
         if let Some(disable) = self.disable_ignore_files {
             config.disable_ignore_files = disable;
+        }
+        if let Some(enabled) = self.git_status {
+            config.git_status = enabled;
         }
         if let Some(secs) = self.idle_timeout_secs {
             config.idle_timeout = Duration::from_secs(secs);
@@ -441,6 +448,15 @@ mod tests {
             extended.resolved_allowed_hosts(),
             vec!["localhost", "127.0.0.1", "::1", "example.test"]
         );
+    }
+
+    #[test]
+    fn git_status_is_off_by_default_and_the_config_file_turns_it_on() {
+        assert!(!Config::default().git_status);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status.toml");
+        std::fs::write(&path, "git_status = true\n").unwrap();
+        assert!(Config::from_file(&path).unwrap().git_status);
     }
 
     #[test]
