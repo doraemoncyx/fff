@@ -56,6 +56,13 @@ tests (`snapshot_process_worker`, `two_processes_indexing_one_root_leave_a_reada
 lose a `ForeignSnapshotDir` race under parallel load and pass alone, so re-run
 them with `-Mode quick -Filter` before reading a red run as your change.
 
+### Soak / long runs
+
+Never judge a background soak by the shell job's status — it can stay `running`
+after the process exited and its json landed. Read the evidence: `Get-Process` on
+the binary, and whether the output json/log `LastWriteTime` still advances. Size
+the run by the log lines you must prove, not a default 30 minutes.
+
 ### Code Quality
 
 - `tools/check.ps1 -Mode lint` - clippy plus the comment rules below
