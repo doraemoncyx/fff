@@ -55,10 +55,15 @@ pub struct IndexStats {
     pub files: usize,
     pub dirs: usize,
     pub scanning: bool,
-    /// The walk is done but the content index is still building.
+    /// True while content indexing is enabled and its filter is not installed:
+    /// the walk may still be running or the build may be in flight. `content_index`
+    /// tells those apart.
     pub indexing: bool,
     /// The bigram prefilter is installed for this Index.
     pub prefilter: bool,
+    /// `disabled` | `pending` (walk still running) | `building` | `ready`
+    /// (prefilter installed). The real state behind `indexing`.
+    pub content_index: &'static str,
     pub last_used: u64,
     pub estimated_bytes: usize,
 }
@@ -76,6 +81,7 @@ pub(crate) fn snapshot(registry: &Registry) -> StatsResponse {
                 scanning: progress.scanning,
                 indexing: progress.indexing,
                 prefilter: progress.prefilter,
+                content_index: progress.content_index,
                 last_used: index.last_used(),
                 estimated_bytes: index.estimated_bytes(),
             }

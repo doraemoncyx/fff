@@ -1295,7 +1295,7 @@ impl FilePicker {
     /// The query should be parsed using [`crate::FFFQuery`] before calling
     /// this function. If a [`crate::QueryTracker`] is provided, the search will
     /// automatically look up the last selected file for this query and boost it
-    #[tracing::instrument(skip_all, name = "Fuzzy file search", fields(query = query.raw_query))]
+    #[tracing::instrument(skip_all, name = "Fuzzy file search", fields(query = query.raw_query, root = %self.base_path.display(), query_len = query.raw_query.chars().count()))]
     pub fn fuzzy_search<'q>(
         &self,
         query: &'q FFFQuery<'q>,

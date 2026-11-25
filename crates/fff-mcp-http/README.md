@@ -135,10 +135,12 @@ the whole budget is kept with a warning rather than thrashing.
 `/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`,
 `refused_roots` — one entry per `root` the Root cap turned away, with its `cap`,
 the `counted` at the crossing and when it was `first_seen`/`last_seen` — and per-Index
-`root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
-`estimated_bytes`, ordered by least recently used. `snapshot` holds the disk
-cache's `hits`/`misses`/`bytes`/`roots` and its `map_bytes`/`map_ceiling`/
-`map_grows`, or `null` when it is not in use.
+`root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`content_index`/`last_used`/
+`estimated_bytes`, ordered by least recently used. `content_index` is the state
+behind `indexing`: `pending` while the walk runs, `building` while the bigram
+filter is built, `ready` once it is installed, `disabled` when content indexing
+is off. `snapshot` holds the disk cache's `hits`/`misses`/`bytes`/`roots` and its
+`map_bytes`/`map_ceiling`/`map_grows`, or `null` when it is not in use.
 
 ## Content index
 
@@ -153,9 +155,10 @@ Cost, in exchange:
   file list. It counts against `--max-memory`, so a multi-Root service reaches
   the eviction threshold sooner — that is the budget doing its job.
 - The build reads every file up to 2 MB once, in the background after the walk.
-  Until it finishes `grep` still works (it just reads every file), and `/stats`
-  reports `indexing: true`; `prefilter: true` marks the point where the prefilter
-  is installed. A request never waits for it.
+  Until it finishes `grep` still works (it just reads every file). `/stats`
+  reports the per-Index `content_index` as `pending` while the walk runs,
+  `building` while the filter is built, then `ready` once it is installed
+  (`prefilter: true`). A request never waits for it.
 - With `--no-watch` the filter is only as fresh as the initial scan, so edits
   made afterwards can be missed by the prefilter. The same is true whenever a
   filesystem event never reaches the watcher (it can happen under very heavy

@@ -151,3 +151,20 @@ _Not_: union index, index merge.
 The state of an Index whose initial walk has not finished. A request can be
 answered while an Index is scan-in-progress, using whatever the walk has
 published so far.
+
+## Session span
+
+The log span around one MCP session's whole life (`serve_inner`), from the
+handshake to the close. A session can run for hours and cover many calls, so its
+`time.busy` is wall clock, never the latency of a request.
+
+_Not_: request cost, a slow call.
+
+## Request span
+
+The log span around one call: `grep_search` for a content search, the
+fuzzy-search span (`Fuzzy file search`) for a filename search. It opens and
+closes inside the request, and its `close time.busy` is what that call cost — the
+only number to judge a slow grep or search by.
+
+_Not_: session span, an Index's lifetime span (`fff_search::log`), a scan.

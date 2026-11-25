@@ -27,10 +27,12 @@ pub(crate) struct IndexProgress {
     pub files: usize,
     pub dirs: usize,
     pub scanning: bool,
-    /// The walk finished but the content index is still being built.
+    /// True while content indexing is enabled and its filter is not installed.
     pub indexing: bool,
     /// The bigram prefilter is installed, so grep can skip files.
     pub prefilter: bool,
+    /// `disabled` | `pending` (walk running) | `building` | `ready` (prefilter on).
+    pub content_index: &'static str,
     pub scanned: usize,
 }
 
@@ -107,16 +109,23 @@ impl Index {
                 scanning: true,
                 indexing: false,
                 prefilter: false,
+                content_index: "pending",
                 scanned: 0,
             };
         };
         let scan = picker.get_scan_progress();
+        let prefilter = picker.bigram_index().is_some();
         IndexProgress {
             files: picker.live_file_count(),
             dirs: picker.get_dirs().len(),
             scanning: scan.is_scanning,
             indexing: !scan.is_warmup_complete,
-            prefilter: picker.bigram_index().is_some(),
+            prefilter,
+            content_index: content_index_state(
+                prefilter,
+                picker.has_content_indexing(),
+                scan.is_scanning,
+            ),
             scanned: scan.scanned_files_count,
         }
     }
@@ -169,5 +178,31 @@ impl Index {
             0
         };
         progress.files * per_file + progress.dirs * 64 + prefilter
+    }
+}
+
+// `prefilter` wins: an installed filter keeps serving grep during a rescan.
+fn content_index_state(prefilter: bool, enabled: bool, scanning: bool) -> &'static str {
+    if prefilter {
+        "ready"
+    } else if !enabled {
+        "disabled"
+    } else if scanning {
+        "pending"
+    } else {
+        "building"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_index_state;
+
+    #[test]
+    fn content_index_state_separates_the_four_cases() {
+        assert_eq!(content_index_state(true, true, false), "ready");
+        assert_eq!(content_index_state(false, false, false), "disabled");
+        assert_eq!(content_index_state(false, true, true), "pending");
+        assert_eq!(content_index_state(false, true, false), "building");
     }
 }

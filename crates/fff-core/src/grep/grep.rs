@@ -191,7 +191,7 @@ impl Sink for PlainTextSink<'_> {
 ///
 /// When `query` is empty, returns git-modified/untracked files sorted by
 /// frecency for the "welcome state" UI.
-#[tracing::instrument(skip_all, fields(file_count = files.len()))]
+#[tracing::instrument(skip_all, fields(file_count = files.len(), root = %base_path.display(), query_len = query.grep_text().chars().count(), mode = %mode_name(options.mode)))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grep_search<'a>(
     files: &'a [FileItem],
@@ -206,6 +206,7 @@ pub(crate) fn grep_search<'a>(
     arena: crate::simd_path::ArenaPtr,
     overflow_arena: crate::simd_path::ArenaPtr,
 ) -> GrepResult<'a> {
+    // `file_count` stays first: tools/profile.ps1 parses it out of this span.
     let result = grep_search_parsed(
         files,
         total_files,
@@ -758,6 +759,14 @@ where
         next_file_offset,
         regex_fallback_error: None,
         literal_fallback: false,
+    }
+}
+
+fn mode_name(mode: GrepMode) -> &'static str {
+    match mode {
+        GrepMode::PlainText => "literal",
+        GrepMode::Regex => "regex",
+        GrepMode::Fuzzy => "fuzzy",
     }
 }
 

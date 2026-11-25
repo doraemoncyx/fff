@@ -12,9 +12,11 @@ curl http://127.0.0.1:8737/stats
 `snapshot.commits` / `rows` / `dropped` / `queued_bytes` / `busy` are the drain
 thread's own counters: `queued_bytes` falling with `commits` rising is healthy,
 while `queued_bytes` pinned with `busy: true` means the writer owns the CPU.
-`indexes[].indexing: true` means that Root's bigram build is still running.
-`scanning: false` together with `indexing: false` on every Root means no scan is
-the culprit — the cost is coming from requests or from a thread outside the index.
+`indexes[].content_index` separates the stages behind `indexing`: `pending` (the
+walk still runs), `building` (the bigram filter is being built), `ready` (the
+prefilter is installed) and `disabled` (content indexing is off). `scanning:
+false` with no Root `pending` or `building` means no scan or build is the culprit
+— the cost is coming from requests or from a thread outside the index.
 
 ## 2. Read the per-run log: what each request cost
 
@@ -27,7 +29,9 @@ in the log's first line, so a running process can be matched by its pid:
 Get-ChildItem "$env:LOCALAPPDATA\fff" -Filter "*+24224.log" | Sort-Object LastWriteTime -Descending
 ```
 
-Request spans carry `time.busy`. A real window over one 35k-file Root:
+Request spans carry `time.busy`. Each names its Root, and a grep also carries the
+query length and the mode, so a 24 s call is attributable without guessing from
+`file_count`. A real window over one 35k-file Root:
 
 ```
 grep::grep                 235 calls   15.2s total   2.76s max
@@ -36,9 +40,11 @@ walk::zlob                  21 calls    0.7s total   0.37s max
 fff_search::log              6 calls 1113.6s total 1078.0s max   ← lifetime span
 ```
 
-`fff_search::log` and `rmcp::service` are guard spans around an Index's whole
-life: their busy is wall clock, never CPU. Sorting every `time.busy` descending
-puts them on top and hides the answer. Judge by the per-request spans only.
+`fff_search::log` and `rmcp::service` (`serve_inner`) are guard spans around an
+Index's whole life and a whole MCP session — Session spans in `GLOSSARY.md`:
+their busy is wall clock, never CPU, and one session can cover many requests.
+Sorting every `time.busy` descending puts them on top and hides the answer.
+Judge by the per-request spans only.
 
 ## 3. Timeline: which second burned the CPU
 
