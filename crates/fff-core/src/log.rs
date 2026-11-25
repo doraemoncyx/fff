@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing_appender::non_blocking;
@@ -132,7 +132,97 @@ pub fn parse_log_level(level: Option<&str>) -> tracing::Level {
 }
 
 /// Default retention: how many prior nvim sessions' log files to keep.
-const DEFAULT_RETAIN_RUNS: usize = 20;
+pub const DEFAULT_RETAIN_RUNS: usize = 20;
+
+/// Default size after which a session file rotates; the tail is kept.
+pub const DEFAULT_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Settings for [`init_tracing_with`].
+pub struct LogOptions<'a> {
+    pub level: Option<&'a str>,
+    pub retain_runs: usize,
+    /// Rotate the session file once it grows past this many bytes; 0 = no cap.
+    pub max_bytes: u64,
+}
+
+// Appends at a byte budget: past it the file is renamed to `<stem>.<n>.<ext>`
+// and a fresh one is opened, so the writer keeps running and the newest lines
+// survive. A rename another handle blocks falls back to truncating in place.
+struct CappedLogFile {
+    file: std::fs::File,
+    path: PathBuf,
+    written: u64,
+    max_bytes: u64,
+}
+
+impl CappedLogFile {
+    fn open(path: &Path, max_bytes: u64) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            written,
+            max_bytes,
+        })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        self.file.flush()?;
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("fff");
+        let ext = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("log");
+        let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+
+        let mut index = 1u32;
+        let rotated = loop {
+            let candidate = dir.join(format!("{stem}.{index}.{ext}"));
+            if !candidate.exists() {
+                break candidate;
+            }
+            index += 1;
+        };
+
+        if std::fs::rename(&self.path, &rotated).is_ok() {
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+        } else {
+            self.file.set_len(0)?;
+        }
+        self.written = 0;
+        Ok(())
+    }
+}
+
+impl io::Write for CappedLogFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.max_bytes != 0
+            && self.written > 0
+            && self.written + buf.len() as u64 > self.max_bytes
+        {
+            self.rotate()?;
+        }
+        let written = self.file.write(buf)?;
+        self.written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
 
 pub fn generate_trace_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -212,6 +302,21 @@ pub fn init_tracing(
     log_level: Option<&str>,
     retain_runs: Option<usize>,
 ) -> Result<String, io::Error> {
+    init_tracing_with(
+        log_file_path,
+        LogOptions {
+            level: log_level,
+            retain_runs: retain_runs.unwrap_or(DEFAULT_RETAIN_RUNS),
+            max_bytes: DEFAULT_LOG_MAX_BYTES,
+        },
+    )
+}
+
+/// Same as [`init_tracing`], with an explicit byte budget per session file.
+pub fn init_tracing_with(
+    log_file_path: &str,
+    options: LogOptions<'_>,
+) -> Result<String, io::Error> {
     let hint = Path::new(log_file_path);
     let session_dir = hint
         .parent()
@@ -234,17 +339,9 @@ pub fn init_tracing(
 
     let stem = hint.file_stem().and_then(|s| s.to_str()).unwrap_or("fff");
     let ext = hint.extension().and_then(|e| e.to_str()).unwrap_or("log");
-    rotate_logs(
-        &session_dir,
-        stem,
-        ext,
-        retain_runs.unwrap_or(DEFAULT_RETAIN_RUNS),
-    );
+    rotate_logs(&session_dir, stem, ext, options.retain_runs);
 
-    let writer_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&session_path)?;
+    let writer_file = CappedLogFile::open(&session_path, options.max_bytes)?;
 
     // we intinionally leark the guard we don't ever want to stop logging
     let (non_blocking_appender, guard) = non_blocking(writer_file);
@@ -262,7 +359,7 @@ pub fn init_tracing(
         )
         .with(
             EnvFilter::builder()
-                .with_default_directive(parse_log_level(log_level).into())
+                .with_default_directive(parse_log_level(options.level).into())
                 .from_env_lossy(),
         );
 
@@ -270,12 +367,51 @@ pub fn init_tracing(
         eprintln!("Failed to set tracing subscriber: {}", e);
     } else {
         tracing::info!(
-            "FFF tracing initialized: {} (pid={}, retain_runs={})",
+            "FFF tracing initialized: {} (pid={}, retain_runs={}, max_bytes={})",
             session_path.display(),
             std::process::id(),
-            retain_runs.unwrap_or(DEFAULT_RETAIN_RUNS),
+            options.retain_runs,
+            options.max_bytes,
         );
     }
 
     Ok(session_path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contents(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn a_capped_file_rotates_and_keeps_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fff+1+2.log");
+        let mut log = CappedLogFile::open(&path, 16).unwrap();
+
+        log.write_all(b"0123456789").unwrap();
+        log.write_all(b"abcdefghij").unwrap();
+        log.write_all(b"KLMN").unwrap();
+        log.flush().unwrap();
+
+        assert_eq!(contents(&dir.path().join("fff+1+2.1.log")), "0123456789");
+        assert_eq!(contents(&path), "abcdefghijKLMN");
+    }
+
+    #[test]
+    fn a_zero_budget_never_rotates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fff+3+4.log");
+        let mut log = CappedLogFile::open(&path, 0).unwrap();
+
+        log.write_all(&[b'x'; 4096]).unwrap();
+        log.write_all(&[b'y'; 4096]).unwrap();
+        log.flush().unwrap();
+
+        assert_eq!(contents(&path).len(), 8192);
+        assert!(!dir.path().join("fff+3+4.1.log").exists());
+    }
 }

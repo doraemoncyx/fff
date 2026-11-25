@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{Level, debug, error, info, warn};
 
 type Debouncer = notify_debouncer_full::Debouncer<notify::RecommendedWatcher, NoCache>;
@@ -37,6 +37,56 @@ pub(crate) struct WatcherOptions {
     pub(crate) enable_home_dir_scanning: bool,
     // Off: no `.git` watch and no status refresh, only the index updates.
     pub(crate) git_status: bool,
+    // Shared by every batch of one Root; see `LogThrottle`.
+    pub(crate) log_throttle: Arc<LogThrottle>,
+}
+
+// One applied-changes INFO line per Root per window; extra batches are
+// counted into the next admitted line instead of printing their own.
+const WATCHER_LOG_WINDOW: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+pub(crate) struct LogThrottle {
+    state: Mutex<ThrottleState>,
+}
+
+#[derive(Default)]
+struct ThrottleState {
+    last_admit: Option<Instant>,
+    suppressed: u64,
+    files: u64,
+    removed: u64,
+}
+
+// Totals for one admitted line, including the batches folded into it.
+struct LogWindow {
+    files: u64,
+    removed: u64,
+    suppressed: u64,
+}
+
+impl LogThrottle {
+    // `Some(window)` when a line may be printed, `None` when this batch folds
+    // into the next one; the window carries the folded totals.
+    fn admit(&self, files: u64, removed: u64) -> Option<LogWindow> {
+        let mut state = self.state.lock();
+        if let Some(last) = state.last_admit
+            && last.elapsed() < WATCHER_LOG_WINDOW
+        {
+            state.suppressed += 1;
+            state.files += files;
+            state.removed += removed;
+            return None;
+        }
+
+        let window = LogWindow {
+            files: files + std::mem::take(&mut state.files),
+            removed: removed + std::mem::take(&mut state.removed),
+            suppressed: std::mem::take(&mut state.suppressed),
+        };
+        state.last_admit = Some(Instant::now());
+        Some(window)
+    }
 }
 
 enum WatchTask {
@@ -550,7 +600,7 @@ pub(crate) fn handle_debounced_events(
     });
     paths_to_add_or_modify.dedup_by(|a, b| a.as_os_str().eq(b.as_os_str()));
 
-    info!(
+    debug!(
         "Event processing summary: {} to remove, {} dirs to remove, {} to add/modify, {} new dirs",
         paths_to_remove.len(),
         dirs_to_remove.len(),
@@ -570,6 +620,7 @@ pub(crate) fn handle_debounced_events(
     let mut files_to_update_git_status = Vec::new();
     let mut index_update_rejected = false;
     let mut overflow_count = 0;
+    let mut removed_files = 0usize;
     let mut removed_from_dirs = Vec::new();
     // Destination path -> (kind, rename source). One entry per path, so a
     // remove+add pair recognised as a rename collapses into a single event.
@@ -612,6 +663,7 @@ pub(crate) fn handle_debounced_events(
             let removed = picker.remove_file_by_path(path);
 
             if removed {
+                removed_files += 1;
                 if need_events_propagation {
                     watch_events.insert(path.to_path_buf(), (WatchEventKind::Removed, None));
                 }
@@ -627,7 +679,7 @@ pub(crate) fn handle_debounced_events(
         dirs_to_remove.dedup();
         if !dirs_to_remove.is_empty() {
             let dirs = dirs_to_remove.iter().map(PathBuf::as_path);
-            if need_events_propagation {
+            removed_files += if need_events_propagation {
                 picker.remove_all_files_in_dirs_with_callback(dirs, |path| {
                     removed_from_dirs.push(path.to_path_buf());
                 })
@@ -685,10 +737,27 @@ pub(crate) fn handle_debounced_events(
         overflow_count = picker.get_overflow_files().len();
     }
 
-    info!(
-        files_updated = files_to_update_git_status.len(),
-        overflow_count, "File index changes applied",
-    );
+    // Only a batch that really touched the index earns an INFO line, and at
+    // most one per Root per window; the rest fold into the next line's count.
+    let files_updated = files_to_update_git_status.len();
+    if files_updated > 0 || removed_files > 0 {
+        match options
+            .log_throttle
+            .admit(files_updated as u64, removed_files as u64)
+        {
+            Some(window) => info!(
+                files_updated = window.files,
+                removed_files = window.removed,
+                overflow_count,
+                suppressed = window.suppressed,
+                "File index changes applied"
+            ),
+            None => debug!(
+                files_updated,
+                removed_files, overflow_count, "File index changes applied (rate-limited)"
+            ),
+        }
+    }
 
     let rescan_started = if index_update_rejected || overflow_count > MAX_OVERFLOW_FILES {
         let reason = if index_update_rejected {
@@ -1265,6 +1334,23 @@ mod tests {
         std::fs::write(&existing, "modified content").unwrap();
         assert!(picker.handle_create_or_modify(&existing).is_some());
         assert_eq!(picker.get_overflow_files().len(), MAX_OVERFLOW_FILES);
+    }
+
+    #[test]
+    fn folded_batches_report_their_totals_in_the_next_line() {
+        let throttle = LogThrottle::default();
+        let first = throttle.admit(2, 0).expect("first line is admitted");
+        assert_eq!(first.files, 2);
+        assert_eq!(first.suppressed, 0);
+
+        assert!(throttle.admit(3, 1).is_none(), "second batch folds");
+        assert!(throttle.admit(1, 0).is_none(), "third batch folds");
+
+        std::thread::sleep(WATCHER_LOG_WINDOW + Duration::from_millis(30));
+        let window = throttle.admit(4, 2).expect("window elapsed");
+        assert_eq!(window.files, 4 + 3 + 1);
+        assert_eq!(window.removed, 2 + 1);
+        assert_eq!(window.suppressed, 2);
     }
 
     #[test]

@@ -58,7 +58,14 @@ fn init_logging(config: &Config) {
         eprintln!("warning: log path is not valid UTF-8, file logging disabled");
         return;
     };
-    if let Err(error) = fff::log::init_tracing(path, config.log_level.as_deref(), None) {
+    if let Err(error) = fff::log::init_tracing_with(
+        path,
+        fff::log::LogOptions {
+            level: config.log_level.as_deref(),
+            retain_runs: fff::log::DEFAULT_RETAIN_RUNS,
+            max_bytes: config.log_max_bytes,
+        },
+    ) {
         eprintln!("warning: cannot start logging: {error}");
     }
 }

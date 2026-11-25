@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 use super::{WatcherOptions, handle_debounced_events};
 use crate::constants::MAX_OVERFLOW_FILES;
-use crate::file_picker::{FFFMode, FilePicker, FilePickerOptions};
+use crate::file_picker::{FFFMode, FilePicker, FilePickerIgnoreOptions, FilePickerOptions};
 use crate::frecency::FrecencyTracker;
 use crate::git_status_worker::GitStatusWorker;
 use crate::rescan_stats::{RescanReason, RescanStats};
@@ -177,6 +177,88 @@ fn writes_inside_a_gitignored_directory_stay_incremental() {
 
     let delta = f.feed(events);
     f.assert_no_rescan(&delta, "build output written into an ignored directory");
+}
+
+// The `--skip` configuration is upstream of both the walk and the watcher.
+#[test]
+fn a_skip_rule_keeps_a_noisy_directory_out_of_the_index_and_the_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = crate::path_utils::canonicalize(tmp.path()).unwrap();
+    std::fs::create_dir_all(base.join("agent-tmp")).unwrap();
+    std::fs::write(base.join("agent-tmp/noise.txt"), "x").unwrap();
+    std::fs::write(base.join("src.rs"), "fn main() {}").unwrap();
+
+    let picker = SharedFilePicker::default();
+    let frecency = SharedFrecency::noop();
+    FilePicker::new_with_shared_state_and_ignore_options(
+        picker.clone(),
+        frecency.clone(),
+        FilePickerOptions {
+            base_path: base.to_string_lossy().into_owned(),
+            watch: false,
+            ..Default::default()
+        },
+        FilePickerIgnoreOptions {
+            extra_ignore: ["agent-tmp/".to_string()].into(),
+            ..Default::default()
+        },
+    )
+    .expect("picker starts");
+    assert!(picker.wait_for_indexing_complete(Duration::from_secs(10)));
+    picker.rebase_watches(&base);
+
+    assert!(
+        !is_indexed_path(&picker, &base.join("agent-tmp/noise.txt")),
+        "a skipped directory must not be indexed"
+    );
+
+    let (sender, receiver) = mpsc::channel();
+    picker
+        .watch_registry()
+        .subscribe(
+            &base,
+            "**",
+            WatchOptions::default(),
+            Box::new(move |_, events| {
+                let _ = sender.send(events.to_vec());
+            }),
+        )
+        .expect("subscribe");
+
+    let noise = base.join("agent-tmp/new.txt");
+    std::fs::write(&noise, "y").unwrap();
+    let new_dirs = handle_debounced_events(
+        &WatcherOptions::default(),
+        vec![create(base.join("agent-tmp")), create(noise.clone())],
+        &base,
+        &None,
+        &picker,
+        &frecency,
+        &GitStatusWorker::new(),
+    );
+
+    assert!(
+        new_dirs.is_empty(),
+        "a skipped directory must not be watched: {new_dirs:?}"
+    );
+    assert!(
+        !is_indexed_path(&picker, &noise),
+        "a skipped directory's file must not reach the index"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "a skipped directory must not dispatch a watch event"
+    );
+}
+
+fn is_indexed_path(picker: &SharedFilePicker, path: &std::path::Path) -> bool {
+    let Ok(guard) = picker.read() else {
+        return false;
+    };
+    guard
+        .as_ref()
+        .and_then(|picker| picker.get_file_by_path(path))
+        .is_some_and(|file| !file.is_deleted())
 }
 
 #[test]

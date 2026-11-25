@@ -171,6 +171,14 @@ pub struct Args {
 
     #[arg(
         long,
+        value_name = "SIZE",
+        value_parser = parse_memory,
+        help = "Rotate the session log past SIZE, keeping the tail (default: 32M, 0 = no cap)"
+    )]
+    pub log_max_bytes: Option<u64>,
+
+    #[arg(
+        long,
         value_name = "SECS",
         help = "Exit after SECS without a request; /healthz is not activity (default: 3600, 0 = never)"
     )]
@@ -286,6 +294,9 @@ impl Args {
         if let Some(level) = self.log_level {
             config.log_level = Some(level);
         }
+        if let Some(bytes) = self.log_max_bytes {
+            config.log_max_bytes = bytes;
+        }
         if let Some(secs) = self.idle_timeout_secs {
             config.idle_timeout = std::time::Duration::from_secs(secs);
         }
@@ -374,7 +385,8 @@ mod tests {
     use super::*;
     use crate::config::{
         DEFAULT_CONCURRENT_SCANS, DEFAULT_EVICT_INTERVAL_SECS, DEFAULT_IDLE_TIMEOUT_SECS,
-        DEFAULT_PORT, DEFAULT_ROOT_CAP_FILES, DEFAULT_SCAN_WAIT_SECS, DEFAULT_SNAPSHOT_BUDGET_MB,
+        DEFAULT_LOG_MAX_BYTES, DEFAULT_PORT, DEFAULT_ROOT_CAP_FILES, DEFAULT_SCAN_WAIT_SECS,
+        DEFAULT_SNAPSHOT_BUDGET_MB,
     };
 
     #[test]
@@ -537,6 +549,32 @@ mod tests {
         assert!(path.is_absolute(), "{}", path.display());
         assert_eq!(path.file_name().unwrap(), "localdata.json");
         assert_eq!(path.parent().unwrap().file_name().unwrap(), "fff");
+    }
+
+    #[test]
+    fn the_log_max_bytes_flag_states_its_default_and_switches_off() {
+        use clap::CommandFactory;
+        let command = Args::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some("log-max-bytes"))
+            .expect("--log-max-bytes is missing");
+        let help = arg.get_help().expect("help text").to_string();
+        assert!(help.contains("default"), "--log-max-bytes: {help}");
+        assert!(help.contains("0 = no cap"), "--log-max-bytes: {help}");
+
+        let default = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        assert_eq!(default.log_max_bytes, DEFAULT_LOG_MAX_BYTES);
+
+        let capped = Args::parse_from(["fff-mcp-http", "--log-max-bytes", "4M"])
+            .into_config()
+            .unwrap();
+        assert_eq!(capped.log_max_bytes, 4 * 1024 * 1024);
+
+        let off = Args::parse_from(["fff-mcp-http", "--log-max-bytes", "0"])
+            .into_config()
+            .unwrap();
+        assert_eq!(off.log_max_bytes, 0);
     }
 
     #[test]

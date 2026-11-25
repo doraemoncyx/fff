@@ -319,6 +319,14 @@ gitignore rules and `--no-ignore-files` stops reading `.ignore`. Skip rules
 apply when an Index is created, so changing them affects new Roots only — use a
 restart (or a different tardir) to rescan an existing Root.
 
+Skip rules also gate the watcher, not just the initial walk: a path under a
+skipped directory is neither indexed nor dispatched to watchers, so its events
+cost one filter check and no log line. That is the knob for self-noise — an
+agent's temp directory, a build output tree, anything this service's own
+tooling rewrites constantly — where a Root would otherwise re-read the same
+noisy paths forever. The syntax is unchanged: a plain path is a pattern like any
+other (`--skip "tmp/"`).
+
 All of the above require the `zlob` walker; a ripgrep-only build refuses to
 start with skip options rather than silently indexing everything.
 
@@ -379,6 +387,7 @@ content_indexing = true
 frecency_db = "C:/Users/me/AppData/Local/fff/frecency"
 log_file = "C:/Users/me/AppData/Local/fff/fff_mcp_http.log"
 log_level = "info"
+log_max_bytes = "32M"
 default_skips = true
 disable_git = false
 disable_ignore_files = false
@@ -400,6 +409,19 @@ long without a request; `/healthz` deliberately does not count as activity.
 Ctrl-C and SIGTERM stop every watcher before exiting. Each launch writes its
 own `<stem>+<timestamp>+<pid>.log` under `%LOCALAPPDATA%\fff\` (or
 `$XDG_STATE_HOME/fff/`), so concurrent instances never share a file.
+
+`log_max_bytes` (TOML) / `--log-max-bytes SIZE` caps one session file
+(`0` = no cap). Past the cap the file becomes `<stem>+<timestamp>+<pid>.1.log`
+and a fresh one is opened in place: the writer keeps running, the newest lines
+stay in the session file, and the rotated ones still count against the
+retention window like any prior session file.
+
+Watcher chatter is not per batch at `info`: the per-batch event summary is a
+`debug` line, and `File index changes applied` is printed only when the batch
+really changed the index, at most once per Root per second. A folded batch is
+counted in the next line's `suppressed` field, so "the watcher is busy" stays
+visible without one line per write. `warn`/`error` lines, scan start/end, Root
+refusals and panics are unaffected.
 
 ## Known limitations
 

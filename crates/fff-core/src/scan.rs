@@ -295,6 +295,7 @@ impl ScanJob {
                     enable_fs_root_scanning: config.enable_fs_root_scanning,
                     enable_home_dir_scanning: config.enable_home_dir_scanning,
                     git_status: config.git_status,
+                    log_throttle: Default::default(),
                 },
                 git_status_worker,
                 tracing::Span::current(),

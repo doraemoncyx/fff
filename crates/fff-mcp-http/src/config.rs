@@ -17,6 +17,8 @@ pub const DEFAULT_EVICT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_SNAPSHOT_BUDGET_MB: u64 = 512;
 pub const DEFAULT_ROOT_CAP_FILES: usize = 500_000;
+/// A session log rotates past this many bytes; `0` turns the cap off.
+pub const DEFAULT_LOG_MAX_BYTES: u64 = fff::log::DEFAULT_LOG_MAX_BYTES;
 
 // rmcp's own loopback allowlist; config entries are added to it.
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
@@ -42,6 +44,8 @@ pub struct Config {
     pub frecency_db: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub log_level: Option<String>,
+    /// Session log byte budget; past it the file rotates. `0` = no cap.
+    pub log_max_bytes: u64,
     pub idle_timeout: Duration,
     pub skip: Vec<String>,
     pub default_skips: bool,
@@ -85,6 +89,7 @@ impl Default for Config {
             frecency_db: None,
             log_file: None,
             log_level: None,
+            log_max_bytes: DEFAULT_LOG_MAX_BYTES,
             idle_timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
             skip: Vec::new(),
             default_skips: true,
@@ -212,6 +217,7 @@ struct ConfigFile {
     frecency_db: Option<PathBuf>,
     log_file: Option<PathBuf>,
     log_level: Option<String>,
+    log_max_bytes: Option<String>,
     default_skips: Option<bool>,
     disable_git: Option<bool>,
     disable_ignore_files: Option<bool>,
@@ -272,6 +278,9 @@ impl ConfigFile {
         }
         if let Some(level) = self.log_level {
             config.log_level = Some(level);
+        }
+        if let Some(raw) = self.log_max_bytes {
+            config.log_max_bytes = parse_memory(&raw)?;
         }
         if let Some(defaults) = self.default_skips {
             config.default_skips = defaults;
@@ -460,6 +469,20 @@ mod tests {
         let path = dir.path().join("status.toml");
         std::fs::write(&path, "git_status = true\n").unwrap();
         assert!(Config::from_file(&path).unwrap().git_status);
+    }
+
+    #[test]
+    fn config_file_sets_the_log_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.toml");
+        assert_eq!(Config::default().log_max_bytes, DEFAULT_LOG_MAX_BYTES);
+        std::fs::write(&path, "log_max_bytes = \"8M\"\n").unwrap();
+        assert_eq!(
+            Config::from_file(&path).unwrap().log_max_bytes,
+            8 * 1024 * 1024
+        );
+        std::fs::write(&path, "log_max_bytes = \"0\"\n").unwrap();
+        assert_eq!(Config::from_file(&path).unwrap().log_max_bytes, 0);
     }
 
     #[test]
