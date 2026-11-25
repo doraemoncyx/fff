@@ -3,6 +3,17 @@
 Four sources, cheapest first. Each one answers a different question, and skipping
 straight to the debugger is how a 20-second burst gets mistaken for a steady leak.
 
+## 0. Build the binary you will measure
+
+```powershell
+python build_fff_mcp_http.py --debug
+```
+
+`--debug` gives a dev binary in seconds; drop it for the release one with symbols
+(step 5). This is the build that exports the pinned zig and libclang, so a bare
+`cargo build -p fff-mcp-http` links against whatever zig sits on PATH. Start it as
+`crates/fff-mcp-http/README.md` shows, then take the pid from its log first line.
+
 ## 1. Ask the process: `/stats`
 
 ```powershell
@@ -45,6 +56,13 @@ Index's whole life and a whole MCP session — Session spans in `GLOSSARY.md`:
 their busy is wall clock, never CPU, and one session can cover many requests.
 Sorting every `time.busy` descending puts them on top and hides the answer.
 Judge by the per-request spans only.
+
+The text of those lines is a contract, because `tools/profile.ps1 -Mode timeline`
+finds events by matching them: `grep_search{file_count=N}` — which is why
+`file_count` stays the span's first field — `SCAN: Walk completed in …`,
+`parent scan subsumed`, `snapshot hit rate root=`, `Spawning background threads`.
+Reword one and the timeline silently drops it: a busy bar with no attribution,
+and no error to tell you why.
 
 ## 3. Timeline: which second burned the CPU
 
