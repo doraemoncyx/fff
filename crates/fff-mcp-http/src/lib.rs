@@ -7,6 +7,7 @@ mod grep;
 mod grep_output;
 mod grep_params;
 mod index;
+mod localdata;
 mod mcp;
 mod memory;
 mod params;

@@ -11,11 +11,12 @@ use crate::config::Config;
 use crate::cursor::{CursorStore, GrepCursor};
 use crate::error::ApiError;
 use crate::index::Index;
+use crate::localdata::Refusals;
 use crate::memory::{MemoryProbe, OsMemoryProbe, collect_allocator};
 use crate::params::Params;
 use crate::scan_gate::{ScanGate, ScanPermit, ScanSlot, SlotWait};
 use crate::search::{self, SearchResponse};
-use crate::stats::StatsResponse;
+use crate::stats::{RefusedRoot, StatsResponse};
 
 const MAX_EVICTIONS_PER_ROUND: usize = 3;
 const EVICT_COOLDOWN_MS: u64 = 30_000;
@@ -37,8 +38,8 @@ pub struct Registry {
     last_activity: AtomicU64,
     probe: Arc<dyn MemoryProbe>,
     evicted_at: Mutex<HashMap<String, u64>>,
-    // Tardirs the Root cap turned away, counted per attempt.
-    refused_roots: AtomicU64,
+    // Root-cap verdicts, kept across restarts so a repeat request never walks.
+    refusals: Refusals,
 }
 
 impl Registry {
@@ -71,6 +72,7 @@ impl Registry {
             }
         }
         let snapshot = open_snapshot(&config);
+        let refusals = Refusals::open(config.localdata.clone());
 
         Ok(Self {
             roots: RwLock::new(Vec::new()),
@@ -87,7 +89,7 @@ impl Registry {
             last_activity: AtomicU64::new(now_millis()),
             probe,
             evicted_at: Mutex::new(HashMap::new()),
-            refused_roots: AtomicU64::new(0),
+            refusals,
         })
     }
 
@@ -120,8 +122,8 @@ impl Registry {
         self.scans.peak()
     }
 
-    pub(crate) fn refused_roots(&self) -> u64 {
-        self.refused_roots.load(Ordering::Relaxed)
+    pub(crate) fn refused_roots(&self) -> Vec<RefusedRoot> {
+        self.refusals.listed()
     }
 
     pub(crate) fn store_cursor(&self, offset: usize) -> String {
@@ -242,19 +244,42 @@ impl Registry {
     // The Root cap, as a gate: `Err` means nothing is indexed, watched or written.
     fn admit_root(&self, tardir: &Path) -> Result<(), ApiError> {
         let cap = self.config.root_cap_files;
+        if cap == 0 {
+            self.refusals.forget(tardir);
+            return Ok(());
+        }
+        // A record replays the earlier verdict instead of walking the tree.
+        if let Some(record) = self.refusals.hit(tardir, cap) {
+            tracing::debug!(root = %record.root, files = record.counted, "replayed a refusal");
+            return Err(crate::root::cap_error(
+                &record.root,
+                record.cap,
+                record.counted,
+                &record.subdirs,
+            ));
+        }
+        // Read before the walk, so a change during it invalidates the record.
+        let mtime = crate::localdata::dir_mtime_ns(tardir);
         let Some(refusal) =
             fff::root_cap::refusal(tardir, cap, self.config.follow_symlinks, &self.ignore)
         else {
+            self.refusals.forget(tardir);
             return Ok(());
         };
-        self.refused_roots.fetch_add(1, Ordering::Relaxed);
+        let root_text = tardir.to_string_lossy().into_owned();
+        self.refusals.remember(tardir, &root_text, &refusal, mtime);
         tracing::warn!(
-            root = %tardir.display(),
+            root = %root_text,
             files = refusal.counted,
             cap = refusal.cap,
             "refused a tardir over the Root cap"
         );
-        Err(crate::root::cap_error(tardir, &refusal))
+        Err(crate::root::cap_error(
+            &root_text,
+            refusal.cap,
+            refusal.counted,
+            &refusal.subdirs,
+        ))
     }
 
     // Drop the map entry only while it still points at `slot`.

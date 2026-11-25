@@ -23,6 +23,23 @@ request may override it.
 _Not_: walk limit (the walker's own stop, a different number), memory budget,
 skip rules.
 
+## Refusal record
+
+The stored answer to one tardir that crossed the Root cap: the Root, the cap, the
+count at the crossing, the subdirectories to retry under, and when the answer was
+first and last given. A later request for the same directory is refused from the
+record without walking, so a client that keeps naming a directory which can never
+become a Root costs the filesystem nothing. A record is a cached verdict, not an
+admission: it holds no directory contents, and the directory it names is still
+not a Root.
+
+A record is believed only while the directory's own mtime is unchanged and the
+record is recent; otherwise the cap walks again, and a directory that now fits
+under it is indexed and its record dropped. Growing can never turn a denial into
+an admission, because the only way past a record is a fresh walk.
+
+_Not_: Root, Index, Snapshot row, a refusal that consumes memory budget.
+
 ## Index
 
 Everything the service holds for one Root: the file and directory tables produced

@@ -318,6 +318,9 @@ impl Args {
         if config.snapshot && config.snapshot_db.is_none() {
             config.snapshot_db = default_snapshot_db();
         }
+        if config.localdata.is_none() {
+            config.localdata = default_localdata();
+        }
     }
 }
 
@@ -334,6 +337,11 @@ impl From<Args> for Config {
 pub fn default_log_file() -> PathBuf {
     let base = default_log_base();
     base.join("fff").join("fff_mcp_http.log")
+}
+
+/// Default refusal-record file, in the same cache directory as the Snapshot.
+pub fn default_localdata() -> Option<PathBuf> {
+    dirs::cache_dir().map(|base| base.join("fff").join("localdata.json"))
 }
 
 /// Default Snapshot environment, one shared directory in the platform cache.
@@ -519,6 +527,15 @@ mod tests {
         let path = config.snapshot_db.expect("default snapshot directory");
         assert!(path.is_absolute(), "{}", path.display());
         assert_eq!(path.file_name().unwrap(), "snapshot-db");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "fff");
+    }
+
+    #[test]
+    fn the_default_localdata_file_is_in_the_cache_dir() {
+        let config = Args::parse_from(["fff-mcp-http"]).into_config().unwrap();
+        let path = config.localdata.expect("default refusal record file");
+        assert!(path.is_absolute(), "{}", path.display());
+        assert_eq!(path.file_name().unwrap(), "localdata.json");
         assert_eq!(path.parent().unwrap().file_name().unwrap(), "fff");
     }
 

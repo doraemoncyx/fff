@@ -133,7 +133,8 @@ serving the current request, and never the last one. A single Root larger than
 the whole budget is kept with a warning rather than thrashing.
 
 `/stats` reports `used_bytes`, `budget_bytes`, `content_indexing`,
-`refused_roots`, and per-Index
+`refused_roots` — one entry per `root` the Root cap turned away, with its `cap`,
+the `counted` at the crossing and when it was `first_seen`/`last_seen` — and per-Index
 `root`/`files`/`dirs`/`scanning`/`indexing`/`prefilter`/`last_used`/
 `estimated_bytes`, ordered by least recently used. `snapshot` holds the disk
 cache's `hits`/`misses`/`bytes`/`roots` and its `map_bytes`/`map_ceiling`/
@@ -267,9 +268,25 @@ exists or a scan slot is taken. Refusing a 2M-file tree therefore costs one walk
 up to the cap, not a scan of the tree; an under-cap directory pays one extra
 walk each time it becomes a Root.
 
-`/stats` reports `refused_roots`, and each refusal logs one `warn` line with the
-Root and the count — the numbers to judge 500,000 by. A Root that is already
-indexed is never re-gated; the cap decides whether a directory becomes a Root.
+A refusal is written down, so a client that keeps asking for the same too-large
+directory stops paying for that walk: the next request for it is answered from a
+**refusal record** in `%LOCALAPPDATA%\fff\localdata.json` (`~/.cache/fff/` on
+other platforms), replaying the same cap, count and subdirectories verbatim. A
+record is believed only while the directory's own mtime is unchanged and the
+record is under 24 hours old; otherwise the cap walks again, and a directory
+that now fits is indexed and its record dropped. At most 256 records are kept,
+the least recently seen going first. A record that cannot be read, does not
+parse or carries an unknown version reads as no record at all and is rewritten
+with clean content; a write that fails logs one `warn` and leaves the refusal
+exactly as it was.
+
+A record is a cached verdict, not an admission: nothing is indexed for it, no
+Snapshot row is written and no memory budget is spent. `/stats` lists the held
+records under `refused_roots`, which is how a client polling a directory that
+will never be indexed is visible; each new refusal logs one `warn` line with the
+Root and the count — the numbers to judge 500,000 by — and a replay of an
+existing record logs at `debug`. A Root that is already indexed is never
+re-gated; the cap decides whether a directory becomes a Root.
 
 ## Binary extensions
 

@@ -179,22 +179,15 @@ fn without_trailing_separator(raw: &str) -> Option<&str> {
 
 // The parameter error a tardir over the Root cap gets: what refused it, and
 // which subdirectories a narrower tardir could name instead.
-pub(crate) fn cap_error(root: &Path, refusal: &fff::root_cap::RootCapRefusal) -> ApiError {
-    let subdirs = if refusal.subdirs.is_empty() {
+pub(crate) fn cap_error(root: &str, cap: usize, counted: usize, subdirs: &[String]) -> ApiError {
+    let named = if subdirs.is_empty() {
         "it has no subdirectories".to_string()
     } else {
-        format!(
-            "its top-level subdirectories are {}",
-            refusal.subdirs.join(", ")
-        )
+        format!("its top-level subdirectories are {}", subdirs.join(", "))
     };
     ApiError::invalid_params(format!(
-        "tardir is over the Root cap: {} is limited to {} files, and the walk stopped after {} files, \
-         so nothing was indexed for it. Narrow the tardir and retry — {}.",
-        root.display(),
-        refusal.cap,
-        refusal.counted,
-        subdirs
+        "tardir is over the Root cap: {root} is limited to {cap} files, and the walk stopped after \
+         {counted} files, so nothing was indexed for it. Narrow the tardir and retry — {named}."
     ))
 }
 
@@ -204,12 +197,8 @@ mod tests {
 
     #[test]
     fn the_cap_message_names_the_cap_the_count_and_the_subdirectories() {
-        let refusal = fff::root_cap::RootCapRefusal {
-            cap: 500_000,
-            counted: 500_003,
-            subdirs: vec!["art".into(), "src".into()],
-        };
-        let message = cap_error(Path::new("C:/work/game"), &refusal)
+        let subdirs = vec!["art".to_string(), "src".to_string()];
+        let message = cap_error("C:/work/game", 500_000, 500_003, &subdirs)
             .message()
             .to_string();
         for expected in [
@@ -222,13 +211,8 @@ mod tests {
             assert!(message.contains(expected), "{message}");
         }
 
-        let flat = fff::root_cap::RootCapRefusal {
-            subdirs: Vec::new(),
-            ..refusal
-        };
-        let message = cap_error(Path::new("C:/work/game"), &flat)
-            .message()
-            .to_string();
+        let flat = cap_error("C:/work/game", 500_000, 500_003, &[]);
+        let message = flat.message().to_string();
         assert!(message.contains("no subdirectories"), "{message}");
     }
 

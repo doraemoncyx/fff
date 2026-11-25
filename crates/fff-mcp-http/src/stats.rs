@@ -10,8 +10,8 @@ pub struct StatsResponse {
     pub scans_started: u64,
     pub scans_in_flight: usize,
     pub peak_scans_in_flight: usize,
-    /// Tardirs the Root cap refused since this process started.
-    pub refused_roots: u64,
+    /// Tardirs the Root cap refused and still holds a record for.
+    pub refused_roots: Vec<RefusedRoot>,
     /// Whether Indexes build the bigram content index used as grep's prefilter.
     pub content_indexing: bool,
     /// `None` when no Snapshot is in use: off by config, unopenable, or latched
@@ -38,6 +38,15 @@ pub struct SnapshotStats {
     pub dropped: u64,
     pub queued_bytes: u64,
     pub busy: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefusedRoot {
+    pub root: String,
+    pub cap: usize,
+    pub counted: usize,
+    pub first_seen: u64,
+    pub last_seen: u64,
 }
 
 #[derive(Debug, Serialize)]

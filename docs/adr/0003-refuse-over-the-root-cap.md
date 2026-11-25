@@ -71,3 +71,8 @@ refuse trees that fit.
 - Each refusal increments `refused_roots` in `/stats` and logs one `warn` line
   with the Root and the count. The 500,000 is meant to be re-judged from those
   numbers rather than guessed again.
+
+_Amended_: `refused_roots` is now the list of held refusal records rather than a
+counter, and a repeat request for a refused directory is answered from its record
+without a second walk. The gate itself is unchanged — a refused tardir is still
+never indexed, watched or snapshotted.

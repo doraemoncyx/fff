@@ -60,6 +60,8 @@ pub struct Config {
     pub snapshot_reset: bool,
     /// Files a tardir may hold before it is refused as a Root; `0` means no cap.
     pub root_cap_files: usize,
+    /// Refusal records (`localdata.json`); `None` keeps them in memory only.
+    pub localdata: Option<PathBuf>,
     /// Extensions added to the built-in binary table at startup; never a replacement.
     pub extra_binary_extensions: Vec<String>,
     /// Test-only: expose `POST /test/evict`.
@@ -95,6 +97,7 @@ impl Default for Config {
             snapshot_budget_mb: DEFAULT_SNAPSHOT_BUDGET_MB,
             snapshot_reset: false,
             root_cap_files: DEFAULT_ROOT_CAP_FILES,
+            localdata: None,
             extra_binary_extensions: Vec::new(),
             test_hook: false,
         }

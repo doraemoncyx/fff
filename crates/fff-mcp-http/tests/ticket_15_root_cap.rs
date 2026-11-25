@@ -101,7 +101,12 @@ fn a_tardir_over_the_cap_is_refused_before_it_becomes_a_root() {
         stats["indexes"].as_array().is_some_and(Vec::is_empty),
         "{stats}"
     );
-    assert_eq!(stats["refused_roots"], 1, "{stats}");
+    assert_eq!(
+        stats["refused_roots"].as_array().map(Vec::len),
+        Some(1),
+        "{stats}"
+    );
+    assert_eq!(stats["refused_roots"][0]["cap"], CAP, "{stats}");
     let store = SnapshotStore::open(&snapshot_dir).expect("snapshot store opens");
     assert!(
         store.read_meta(tree.path()).expect("meta read").is_none(),
@@ -144,7 +149,12 @@ fn a_narrow_sub_path_cannot_rescue_a_refused_tardir() {
         stats["indexes"].as_array().is_some_and(Vec::is_empty),
         "{stats}"
     );
-    assert_eq!(stats["refused_roots"], 4, "{stats}");
+    // Four requests, one recorded refusal: a replay is not a second walk.
+    assert_eq!(
+        stats["refused_roots"].as_array().map(Vec::len),
+        Some(1),
+        "{stats}"
+    );
 }
 
 #[test]
@@ -176,7 +186,10 @@ fn a_root_at_the_cap_is_indexed() {
         ("maxResults", "200"),
     ]);
     assert_eq!(body["total"], CAP, "{body}");
-    assert_eq!(server.stats()["refused_roots"], 0);
+    assert_eq!(
+        server.stats()["refused_roots"].as_array().map(Vec::len),
+        Some(0)
+    );
     assert_eq!(server.stats()["indexes"].as_array().map(Vec::len), Some(1));
 
     // A fresh copy one file over the cap: an indexed Root is never re-gated.
@@ -203,7 +216,10 @@ fn a_cap_of_zero_indexes_a_tree_of_any_size() {
     ]);
     assert_eq!(body["total"], FILES, "{body}");
     assert_eq!(body["scanning"], false, "{body}");
-    assert_eq!(server.stats()["refused_roots"], 0);
+    assert_eq!(
+        server.stats()["refused_roots"].as_array().map(Vec::len),
+        Some(0)
+    );
 }
 
 // An under-cap Root is untouched by the gate: its Snapshot still serves a rescan.
