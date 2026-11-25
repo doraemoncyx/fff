@@ -12,7 +12,8 @@ Its default mode is scoped, on purpose:
 - `tools/check.ps1` (or `-Mode quick`) - clippy, comment rules, and each changed
   crate's unit tests (`--lib`). This is the loop: run it after every edit; ~20s
   for a fff-core edit. A clean tree tests nothing, so after a commit use
-  `-Path <crate>` or `-Mode fast`.
+  `-Path crates/fff-mcp-http` or `-Mode fast`. `-Path` takes a directory: the
+  package name resolves to no crate and runs nothing.
 - `tools/check.ps1 -Mode fast` - the same plus the integration binaries and e2e
   tests of the changed crates. Run it before committing.
 - `tools/check.ps1 -Mode quick -Filter <test name>` - a single test. Use this
@@ -44,8 +45,10 @@ feature, `ripgrep` is the default.
 
 - Create e2e local test file for Neovim: Load any Lua test file with `nvim -l <test_file>`
 
-`OK (<mode>)` is the verdict. A green run still prints cargo's `failures:`
-block for the tests `$windowsOnlyFailures` in `tools/check.ps1` excuses; that
+`OK (<mode>)` is the verdict — unless `no changed crate; nothing to test` sits
+above it: `-Path` resolved to nothing, zero tests ran, and that `OK` is empty.
+A green run still prints cargo's `failures:` block for the tests
+`$windowsOnlyFailures` in `tools/check.ps1` excuses; that
 list is the only enumeration. Outside it, the two `scan::tests` multi-process
 tests (`snapshot_process_worker`, `two_processes_indexing_one_root_leave_a_readable_snapshot`)
 lose a `ForeignSnapshotDir` race under parallel load and pass alone, so re-run
