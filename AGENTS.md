@@ -16,8 +16,9 @@ Its default mode is scoped, on purpose:
   package name resolves to no crate and runs nothing.
 - `tools/check.ps1 -Mode fast` - the same plus the integration binaries and e2e
   tests of the changed crates. Run it before committing.
-- `tools/check.ps1 -Mode quick -Filter <test name>` - a single test. Use this
-  while iterating on one function; it finishes in well under a second.
+- `tools/check.ps1 -Mode quick -Filter <test name>` - a single test. The name is a
+  substring of the `#[test]` function, never the test *file*: `-Filter ticket_20`
+  matches nothing and still ends in `OK`. It finishes in well under a second.
 - `tools/check.ps1 -Mode lint` / `-Mode fmt` / `-Mode comments`
 - `tools/check.ps1 -Mode fix` - apply `cargo fmt`
 
@@ -46,7 +47,8 @@ feature, `ripgrep` is the default.
 - Create e2e local test file for Neovim: Load any Lua test file with `nvim -l <test_file>`
 
 `OK (<mode>)` is the verdict — unless `no changed crate; nothing to test` sits
-above it: `-Path` resolved to nothing, zero tests ran, and that `OK` is empty.
+above it, or every binary printed `running 0 tests`: `-Path` resolved to nothing
+or `-Filter` matched no test name, and that `OK` is empty.
 A green run still prints cargo's `failures:` block for the tests
 `$windowsOnlyFailures` in `tools/check.ps1` excuses; that
 list is the only enumeration. Outside it, the two `scan::tests` multi-process

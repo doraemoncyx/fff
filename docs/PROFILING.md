@@ -14,6 +14,10 @@ python build_fff_mcp_http.py --debug
 `cargo build -p fff-mcp-http` links against whatever zig sits on PATH. Start it as
 `crates/fff-mcp-http/README.md` shows, then take the pid from its log first line.
 
+Measure the tree you will commit: build, copy, then run. An edit after the copy
+leaves the binary stale and the numbers describe a tree that never shipped.
+Record the commit and the binary's hash next to the numbers.
+
 ## 1. Ask the process: `/stats`
 
 ```powershell
